@@ -2,6 +2,7 @@ import type { Flow } from "../flow/schema.js";
 import type { ModelClient, ModelMessage } from "./model.js";
 import { runNode } from "./run-node.js";
 import { InMemorySessionStore, type Session, type SessionStore, type TranscriptEntry } from "./session.js";
+import { renderTemplate } from "./templating.js";
 import type { TurnResult } from "./turn.js";
 
 /** Spoken when the model produced nothing to say. */
@@ -14,9 +15,21 @@ export interface StartContext {
   callerNumber?: string;
 }
 
+/** Most Nodes that run for one Caller utterance, which guards against routing loops. */
+export const DEFAULT_MAX_HOPS = 4;
+
 export interface FlowEngineOptions {
   client: ModelClient;
   store?: SessionStore;
+  /** Most Nodes that run for one Caller utterance. Defaults to `DEFAULT_MAX_HOPS`. */
+  maxHops?: number;
+}
+
+/** Where one utterance left the Call. `endState` is set when the Call ended, and `nodeId` is the last Node that ran. */
+interface Advance {
+  reply: string;
+  nodeId: string;
+  endState?: string;
 }
 
 /**
@@ -43,6 +56,7 @@ export class FlowEngine {
   readonly #flow: Flow;
   readonly #client: ModelClient;
   readonly #store: SessionStore;
+  readonly #maxHops: number;
   /** Tail of the queue of Turns in flight for each Call, so Turns on one Call run one at a time. */
   readonly #queues = new Map<string, Promise<unknown>>();
 
@@ -50,6 +64,9 @@ export class FlowEngine {
     this.#flow = flow;
     this.#client = options.client;
     this.#store = options.store ?? new InMemorySessionStore();
+    const maxHops = options.maxHops ?? DEFAULT_MAX_HOPS;
+    if (!Number.isInteger(maxHops) || maxHops < 1) throw new Error(`maxHops must be a positive integer, got ${maxHops}`);
+    this.#maxHops = maxHops;
   }
 
   /** Opens a Call: runs the start Node with no Caller input and returns the Receptionist's greeting. */
@@ -102,21 +119,60 @@ export class FlowEngine {
     if (stored) return stored;
     if (session.endState !== undefined) throw new Error(`Call "${callId}" has ended (${session.endState})`);
 
-    const run = await runNode({
-      flow: this.#flow,
-      node: this.#node(session.currentNodeId),
-      client: this.#client,
-      variables: session.variables,
-      messages: [...modelHistory(session.transcript), { role: "user", content: utterance }],
-    });
-
-    const reply = run.stopReason === "refusal" ? REFUSAL_LINE : run.text || EMPTY_REPLY_LINE;
-    const result: TurnResult = { reply, nodeId: session.currentNodeId, ended: false, actions: [] };
-    session.transcript.push({ role: "caller", text: utterance }, { role: "receptionist", text: reply });
+    const outcome = await this.#advance(session, utterance);
+    const result: TurnResult = {
+      reply: outcome.reply,
+      nodeId: outcome.endState ?? outcome.nodeId,
+      ended: outcome.endState !== undefined,
+      ...(outcome.endState !== undefined ? { endState: outcome.endState } : {}),
+      actions: [],
+    };
+    session.currentNodeId = outcome.nodeId;
+    if (outcome.endState !== undefined) session.endState = outcome.endState;
+    session.transcript.push({ role: "caller", text: utterance }, { role: "receptionist", text: outcome.reply });
     session.turns[turnId] = result;
     session.updatedAt = Date.now();
     await this.#store.put(session);
     return result;
+  }
+
+  /**
+   * Runs the Caller's utterance through the Flow. Each hop runs one Node on the same utterance. If the model takes an
+   * Edge to another Node, that Node runs next, told what has already been said. An Edge to an End state finishes the
+   * Call: the End state's message is spoken after anything said so far, even if nothing was. At most `maxHops` Nodes
+   * run per utterance, so a routing loop stops on the Node it reached. Does not change the session.
+   */
+  async #advance(session: Session, utterance: string): Promise<Advance> {
+    const history: ModelMessage[] = [...modelHistory(session.transcript), { role: "user", content: utterance }];
+    const said: string[] = [];
+    let node = this.#node(session.currentNodeId);
+
+    for (let hop = 1; ; hop++) {
+      const run = await runNode({
+        flow: this.#flow,
+        node,
+        client: this.#client,
+        variables: session.variables,
+        messages: [...history],
+        edges: this.#flow.edges.filter((edge) => edge.from === node.id),
+        ...(said.length > 0 ? { alreadySaid: said.join(" ") } : {}),
+      });
+
+      // A refusal discards the whole Turn, so the Call stays where it was and nothing half-said is spoken.
+      if (run.stopReason === "refusal") return { reply: REFUSAL_LINE, nodeId: session.currentNodeId };
+      if (run.text) said.push(run.text);
+
+      const edge = run.edge;
+      if (!edge) break;
+      const endState = this.#flow.end_states[edge.to];
+      if (endState) {
+        const message = renderTemplate(endState.message, session.variables);
+        return { reply: [...said, message].join(" "), nodeId: node.id, endState: edge.to };
+      }
+      if (hop >= this.#maxHops) break;
+      node = this.#node(edge.to);
+    }
+    return { reply: said.join(" ") || EMPTY_REPLY_LINE, nodeId: node.id };
   }
 
   #node(id: string) {
