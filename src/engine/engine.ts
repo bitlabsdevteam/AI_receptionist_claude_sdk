@@ -1,7 +1,7 @@
-import type { Flow } from "../flow/schema.js";
+import type { Flow, FlowNode } from "../flow/schema.js";
 import type { ModelClient, ModelMessage } from "./model.js";
 import { ReplyWriter, type ReplyStream } from "./reply-stream.js";
-import { runNode } from "./run-node.js";
+import { runNode, type NodeRun, type RunNodeInput } from "./run-node.js";
 import { InMemorySessionStore, type Session, type SessionStore, type TranscriptEntry } from "./session.js";
 import { renderTemplate } from "./templating.js";
 import type { TurnResult } from "./turn.js";
@@ -11,6 +11,18 @@ export const EMPTY_REPLY_LINE = "Sorry, could you say that again?";
 
 /** Spoken when the model refused to answer. Says nothing about why, and offers nothing the Receptionist cannot do. */
 export const REFUSAL_LINE = "I'm sorry, I can't help with that. Is there anything else I can help you with?";
+
+/**
+ * The greeting spoken when the model's own greeting was refused or empty, built from the Flow's variables so it never
+ * says more than the Flow already knows.
+ */
+function safeGreeting(variables: Readonly<Record<string, string>>): string {
+  const name = variables.receptionist_name;
+  const company = variables.company_name;
+  const intro = name && company ? `this is ${name} from ${company}` : name ? `this is ${name}` : "thank you for calling";
+  // A company name such as "Acme Co." already ends the sentence.
+  return `Hello, ${intro}${/[.!?]$/.test(intro) ? "" : "."} How can I help you today?`;
+}
 
 export interface StartContext {
   callerNumber?: string;
@@ -31,6 +43,8 @@ interface Advance {
   reply: string;
   nodeId: string;
   endState?: string;
+  /** The model refused, so the Turn is kept for display but not shown to the model again. */
+  refused?: true;
 }
 
 /**
@@ -41,15 +55,18 @@ const CALL_CONNECTED = "[The Call has just connected. The Caller has not said an
 
 /**
  * The Call so far as model messages. The model API needs a user message first, and the Receptionist speaks first,
- * so the transcript is preceded by the same stand-in `start` used.
+ * so the transcript is preceded by the same stand-in `start` used. Refused Turns are left out so the refused text is
+ * never replayed, and so is any entry with no text, because the model API rejects an empty message.
  */
 function modelHistory(transcript: readonly TranscriptEntry[]): ModelMessage[] {
   return [
     { role: "user", content: CALL_CONNECTED },
-    ...transcript.map((entry): ModelMessage => ({
-      role: entry.role === "caller" ? "user" : "assistant",
-      content: entry.text,
-    })),
+    ...transcript
+      .filter((entry) => !entry.refused && entry.text.trim() !== "")
+      .map((entry): ModelMessage => ({
+        role: entry.role === "caller" ? "user" : "assistant",
+        content: entry.text,
+      })),
   ];
 }
 
@@ -88,28 +105,21 @@ export class FlowEngine {
       updatedAt: now,
     };
 
-    const messages: ModelMessage[] = [{ role: "user", content: CALL_CONNECTED }];
     const writer = new ReplyWriter(stream);
-    writer.beginHop();
     let run;
     try {
-      run = await runNode({
-        flow: this.#flow,
-        node,
-        client: this.#client,
-        variables: session.variables,
-        messages,
-        onTextDelta: (delta) => writer.push(delta),
-      });
+      run = await this.#runHop(writer, node, session.variables, [{ role: "user", content: CALL_CONNECTED }]);
     } catch (error) {
       writer.abort();
       throw error;
     }
-    writer.finish(run.text);
+    // A refused or empty greeting is never shown or stored. The Call opens on a safe line instead.
+    const greeting = run.stopReason === "refusal" || run.text === "" ? safeGreeting(session.variables) : run.text;
+    writer.finish(greeting);
 
-    session.transcript.push({ role: "receptionist", text: run.text });
+    session.transcript.push({ role: "receptionist", text: greeting });
     await this.#store.put(session);
-    return { reply: run.text, nodeId: session.currentNodeId, ended: false, actions: [] };
+    return { reply: greeting, nodeId: session.currentNodeId, ended: false, actions: [] };
   }
 
   /**
@@ -157,7 +167,11 @@ export class FlowEngine {
     };
     session.currentNodeId = advance.nodeId;
     if (advance.endState !== undefined) session.endState = advance.endState;
-    session.transcript.push({ role: "caller", text: utterance }, { role: "receptionist", text: advance.reply });
+    const refused = advance.refused ? { refused: true as const } : {};
+    session.transcript.push(
+      { role: "caller", text: utterance, ...refused },
+      { role: "receptionist", text: advance.reply, ...refused },
+    );
     session.turns[turnId] = result;
     session.updatedAt = Date.now();
     await this.#store.put(session);
@@ -176,20 +190,13 @@ export class FlowEngine {
     let node = this.#node(session.currentNodeId);
 
     for (let hop = 1; ; hop++) {
-      writer.beginHop();
-      const run = await runNode({
-        flow: this.#flow,
-        node,
-        client: this.#client,
-        variables: session.variables,
-        messages: [...history],
+      const run = await this.#runHop(writer, node, session.variables, [...history], {
         edges: this.#flow.edges.filter((edge) => edge.from === node.id),
         ...(said.length > 0 ? { alreadySaid: said.join(" ") } : {}),
-        onTextDelta: (delta) => writer.push(delta),
       });
 
       // A refusal discards the whole Turn, so the Call stays where it was and nothing half-said is spoken.
-      if (run.stopReason === "refusal") return { reply: REFUSAL_LINE, nodeId: session.currentNodeId };
+      if (run.stopReason === "refusal") return { reply: REFUSAL_LINE, nodeId: session.currentNodeId, refused: true };
       if (run.text) said.push(run.text);
 
       const edge = run.edge;
@@ -203,6 +210,26 @@ export class FlowEngine {
       node = this.#node(edge.to);
     }
     return { reply: said.join(" ") || EMPTY_REPLY_LINE, nodeId: node.id };
+  }
+
+  /** Runs one Node as one hop of the reply: what the model streams goes to `writer`. The caller aborts `writer` on failure. */
+  #runHop(
+    writer: ReplyWriter,
+    node: FlowNode,
+    variables: Readonly<Record<string, string>>,
+    messages: ModelMessage[],
+    extra: Pick<RunNodeInput, "edges" | "alreadySaid"> = {},
+  ): Promise<NodeRun> {
+    writer.beginHop();
+    return runNode({
+      flow: this.#flow,
+      node,
+      client: this.#client,
+      variables,
+      messages,
+      ...extra,
+      onTextDelta: (delta) => writer.push(delta),
+    });
   }
 
   #node(id: string) {

@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { FlowEngine } from "../src/engine/engine.js";
+import { FlowEngine, REFUSAL_LINE } from "../src/engine/engine.js";
 import type { ModelClient, ModelResponse } from "../src/engine/model.js";
 import { InMemorySessionStore } from "../src/engine/session.js";
 import { loadFlow } from "../src/flow/load.js";
@@ -167,9 +167,49 @@ describe("a reply the Receptionist cannot speak", () => {
     const session = await store.get("call-1");
     expect(session?.currentNodeId).toBe("start");
     expect(session?.transcript.slice(-2)).toEqual([
-      { role: "caller", text: CALLER },
-      { role: "receptionist", text: result.reply },
+      { role: "caller", text: CALLER, refused: true },
+      { role: "receptionist", text: result.reply, refused: true },
     ]);
+  });
+
+  it("keeps a refused Turn in the transcript, marked refused, for display and idempotency", async () => {
+    const { engine, store } = await openedCall(reply([], "refusal"));
+
+    const result = await engine.handleUser("call-1", CALLER, "turn-1");
+
+    const session = await store.get("call-1");
+    expect(session?.transcript.slice(-2)).toEqual([
+      { role: "caller", text: CALLER, refused: true },
+      { role: "receptionist", text: result.reply, refused: true },
+    ]);
+    expect(session?.turns["turn-1"]).toEqual(result);
+  });
+
+  it("does not replay a refused Turn to the model on later Turns, but still replays the Turns around it", async () => {
+    const { engine, client } = await openedCall(
+      say("First answer."),
+      reply([], "refusal"),
+      say("Third answer."),
+      say("Fourth answer."),
+    );
+    await engine.handleUser("call-1", "One?", "turn-1");
+    await engine.handleUser("call-1", "Something refused", "turn-2");
+    await engine.handleUser("call-1", "Three?", "turn-3");
+    await engine.handleUser("call-1", "Four?", "turn-4");
+
+    for (const request of [client.requests[3]!, client.requests[4]!]) {
+      const sent = request.messages.map((m) => m.content);
+      expect(sent).not.toContain("Something refused");
+      expect(sent).not.toContain(REFUSAL_LINE);
+    }
+    expect(client.requests[3]!.messages.map((m) => m.content)).toEqual([
+      expect.stringContaining("The Call has just connected"),
+      GREETING,
+      "One?",
+      "First answer.",
+      "Three?",
+    ]);
+    expect(client.requests[4]!.messages.at(-1)).toEqual({ role: "user", content: "Four?" });
   });
 
   it("keeps working after a refusal: the next Turn is answered normally", async () => {

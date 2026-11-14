@@ -123,6 +123,19 @@ describe("a Turn that is discarded", () => {
     expect(result.reply).toBe(REFUSAL_LINE);
   });
 
+  it("retracts text streamed before a refused greeting, then shows the safe greeting instead", async () => {
+    const { stream, events, screen } = recorder();
+    const engine = new FlowEngine(flow, {
+      client: new FakeClaude([reply([{ type: "text", text: "Sure, here is how to" }], "refusal")]),
+    });
+
+    const result = await engine.start("call-1", {}, stream);
+
+    expect(events.filter((e) => e === "discard")).toHaveLength(1);
+    expect(screen()).toBe(GREETING);
+    expect(result.reply).toBe(GREETING);
+  });
+
   it("retracts nothing when the refusal came with no text", async () => {
     const { stream, events, screen } = recorder();
     const engine = new FlowEngine(flow, { client: new FakeClaude([say(GREETING), reply([], "refusal")]) });

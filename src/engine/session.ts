@@ -4,6 +4,11 @@ import type { TurnResult } from "./turn.js";
 export interface TranscriptEntry {
   role: "caller" | "receptionist";
   text: string;
+  /**
+   * Set on both sides of a Turn the model refused. The Turn stays here for display and so a repeated turn id is
+   * answered the same way, but it is never shown to the model again.
+   */
+  refused?: true;
 }
 
 /**

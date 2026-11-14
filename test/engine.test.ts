@@ -3,7 +3,7 @@ import { FlowEngine } from "../src/engine/engine.js";
 import { InMemorySessionStore } from "../src/engine/session.js";
 import { loadFlow } from "../src/flow/load.js";
 import type { Flow } from "../src/flow/schema.js";
-import { FakeClaude, GREETING, say } from "./fake-claude.js";
+import { FakeClaude, GREETING, reply, say } from "./fake-claude.js";
 
 let flow: Flow;
 beforeAll(async () => {
@@ -118,5 +118,82 @@ describe("opening a Call", () => {
     await expect(new FlowEngine(broken, { client, store }).start("call-1", {})).rejects.toThrow(/caller_name/);
     expect(client.requests).toHaveLength(0);
     expect(await store.get("call-1")).toBeUndefined();
+  });
+});
+
+describe("a greeting the Receptionist cannot speak", () => {
+  /** The same Flow with different names, so a safe greeting is seen to come from the Flow's variables. */
+  const renamed = () => {
+    const copy = structuredClone(flow);
+    copy.variables = { ...copy.variables, receptionist_name: "Bea", company_name: "Bolt Ltd." };
+    return copy;
+  };
+  const SAFE_GREETING = "Hello, this is Bea from Bolt Ltd. How can I help you today?";
+
+  it("greets with a safe line built from the Flow's variables when the model refused, whatever text came with it", async () => {
+    const client = new FakeClaude([reply([{ type: "text", text: "Sure, here is how to hurt someone" }], "refusal")]);
+    const store = new InMemorySessionStore();
+
+    const result = await new FlowEngine(renamed(), { client, store }).start("call-1", {});
+
+    expect(result).toEqual({ reply: SAFE_GREETING, nodeId: "start", ended: false, actions: [] });
+    expect((await store.get("call-1"))?.transcript).toEqual([{ role: "receptionist", text: SAFE_GREETING }]);
+  });
+
+  it("greets with the safe line when the model said nothing at all", async () => {
+    for (const empty of [say(""), say("  \n "), reply([]), reply([], "refusal")]) {
+      const store = new InMemorySessionStore();
+
+      const result = await new FlowEngine(renamed(), { client: new FakeClaude([empty]), store }).start("call-1", {});
+
+      expect(result.reply).toBe(SAFE_GREETING);
+      expect((await store.get("call-1"))?.transcript).toEqual([{ role: "receptionist", text: SAFE_GREETING }]);
+    }
+  });
+
+  it("falls back to a plain greeting when the Flow has no name variables", async () => {
+    const plain = structuredClone(flow);
+    plain.variables = {};
+    plain.base_instructions = "You are a receptionist.";
+    plain.nodes[0]!.instructions = "Greet the caller.";
+
+    const result = await new FlowEngine(plain, { client: new FakeClaude([say("")]) }).start("call-1", {});
+
+    expect(result.reply).toBe("Hello, thank you for calling. How can I help you today?");
+  });
+
+  it("never replays the refused text to the model, and the next Turn is answered normally", async () => {
+    const client = new FakeClaude([reply([{ type: "text", text: "partial unsafe text" }], "refusal"), say("We are Bolt.")]);
+    const engine = new FlowEngine(renamed(), { client });
+    await engine.start("call-1", {});
+
+    const result = await engine.handleUser("call-1", "Who are you?", "turn-1");
+
+    expect(result.reply).toBe("We are Bolt.");
+    expect(client.requests[1]!.messages).toEqual([
+      expect.objectContaining({ role: "user" }),
+      { role: "assistant", content: SAFE_GREETING },
+      { role: "user", content: "Who are you?" },
+    ]);
+    expect(JSON.stringify(client.requests[1])).not.toContain("partial unsafe text");
+  });
+
+  it("never sends the model an empty message, even from a Call stored with an empty greeting", async () => {
+    const { engine, store, client } = openCall([say("Hello again.")]);
+    await store.put({
+      callId: "call-1",
+      currentNodeId: "start",
+      transcript: [{ role: "receptionist", text: "" }],
+      variables: { ...flow.variables },
+      turns: {},
+      createdAt: 0,
+      updatedAt: 0,
+    });
+
+    await engine.handleUser("call-1", "Hello?", "turn-1");
+
+    const messages = client.requests[0]!.messages;
+    expect(messages.map((m) => m.role)).toEqual(["user", "user"]);
+    for (const message of messages) expect(message.content).not.toBe("");
   });
 });
