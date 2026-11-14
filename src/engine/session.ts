@@ -1,0 +1,44 @@
+/** One plain-text turn of a Call's transcript. Tool calls and results are never stored here. */
+export interface TranscriptEntry {
+  role: "caller" | "receptionist";
+  text: string;
+}
+
+/**
+ * The state of one Call. A plain serialisable object, so a store can keep it anywhere.
+ * ("Session" is only the code-level name for this; the domain term is Call.)
+ */
+export interface Session {
+  callId: string;
+  currentNodeId: string;
+  transcript: TranscriptEntry[];
+  /** Facts that must persist across Turns. Seeded from the Flow variables. */
+  variables: Record<string, string>;
+  /** Epoch milliseconds. */
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SessionStore {
+  get(callId: string): Promise<Session | undefined>;
+  put(session: Session): Promise<void>;
+  delete(callId: string): Promise<void>;
+}
+
+/** Phase 1 store. Keeps copies, so it behaves like an external store that serialises sessions. */
+export class InMemorySessionStore implements SessionStore {
+  readonly #sessions = new Map<string, Session>();
+
+  async get(callId: string): Promise<Session | undefined> {
+    const session = this.#sessions.get(callId);
+    return session && structuredClone(session);
+  }
+
+  async put(session: Session): Promise<void> {
+    this.#sessions.set(session.callId, structuredClone(session));
+  }
+
+  async delete(callId: string): Promise<void> {
+    this.#sessions.delete(callId);
+  }
+}
