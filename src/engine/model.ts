@@ -47,7 +47,12 @@ export interface ModelResponse {
 
 /** Implemented by the real Anthropic and OpenRouter clients, and by `FakeClaude` in tests. */
 export interface ModelClient {
-  createMessage(req: ModelRequest): Promise<ModelResponse>;
+  /**
+   * `onTextDelta`, if given, receives the reply's text as it is generated, in order. Text blocks are separated by a
+   * single space delta. It is called for the text of a response that turns out to be a refusal too, so the caller
+   * decides what to show. It is never called after the returned promise settles.
+   */
+  createMessage(req: ModelRequest, onTextDelta?: (delta: string) => void): Promise<ModelResponse>;
 }
 
 /**

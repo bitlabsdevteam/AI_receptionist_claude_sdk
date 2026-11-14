@@ -9,8 +9,12 @@ import {
 } from "./model.js";
 import { renderTemplate } from "./templating.js";
 
-/** Replies are spoken aloud, so they stay short. */
-export const MAX_TOKENS = 300;
+/**
+ * Upper bound on one model call, not a target length. Adaptive thinking counts toward `max_tokens` even though it is
+ * not returned, so the PRD's 300 can cut a reply off after a long think. Replies stay short because the Flow's
+ * instructions say so (1 to 3 sentences), not because of this limit.
+ */
+export const MAX_TOKENS = 1024;
 
 /** Effort when a Node does not set one. */
 const DEFAULT_EFFORT = "low";
@@ -45,6 +49,8 @@ export interface RunNodeInput {
   edges?: readonly FlowEdge[];
   /** What the Receptionist has already said to the Caller this Turn, so this Node does not repeat it. */
   alreadySaid?: string;
+  /** Receives the model's text as it streams in. */
+  onTextDelta?: (delta: string) => void;
 }
 
 export interface NodeRun {
@@ -63,7 +69,7 @@ export interface NodeRun {
  * (the first, if it calls several). Following the Edge is the caller's job. Business tools are not handled yet.
  */
 export async function runNode(input: RunNodeInput): Promise<NodeRun> {
-  const { flow, node, client, variables, messages, edges = [], alreadySaid } = input;
+  const { flow, node, client, variables, messages, edges = [], alreadySaid, onTextDelta } = input;
   const { provider, model } = parseModelRef(node.model ?? flow.default_model);
   const system = [
     ...[flow.base_instructions, node.instructions]
@@ -72,15 +78,18 @@ export async function runNode(input: RunNodeInput): Promise<NodeRun> {
     ...(alreadySaid ? [alreadySaidNote(alreadySaid)] : []),
   ].join("\n\n");
 
-  const response = await client.createMessage({
-    provider,
-    model,
-    system,
-    messages,
-    tools: edges.map(transitionTool),
-    effort: node.effort ?? DEFAULT_EFFORT,
-    maxTokens: MAX_TOKENS,
-  });
+  const response = await client.createMessage(
+    {
+      provider,
+      model,
+      system,
+      messages,
+      tools: edges.map(transitionTool),
+      effort: node.effort ?? DEFAULT_EFFORT,
+      maxTokens: MAX_TOKENS,
+    },
+    onTextDelta,
+  );
 
   const text = response.content
     .flatMap((block) => (block.type === "text" ? [block.text] : []))

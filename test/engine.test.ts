@@ -46,10 +46,18 @@ describe("opening a Call", () => {
     expect(req.system).toContain("You are Ava, the virtual receptionist for Acme Co.");
     expect(req.system).not.toContain("{{");
     expect(req.effort).toBe("low");
-    expect(req.maxTokens).toBe(300);
+    // Adaptive thinking counts toward max_tokens, so the limit is far above a 1 to 3 sentence reply.
+    expect(req.maxTokens).toBe(1024);
     // The Messages API needs a user message first, even though the Caller has not spoken.
     expect(req.messages).toHaveLength(1);
     expect(req.messages[0]?.role).toBe("user");
+  });
+
+  it("tells the start Node to end the Call without a farewell of its own, because the End state speaks one", () => {
+    const start = flow.nodes.find((n) => n.id === flow.start_node)!;
+
+    expect(start.instructions).toMatch(/without (saying|giving|adding) (a|any) (farewell|goodbye)/i);
+    expect(start.instructions).toMatch(/closing message/i);
   });
 
   it("sends none of the sampling parameters Sonnet 5.5 rejects", async () => {

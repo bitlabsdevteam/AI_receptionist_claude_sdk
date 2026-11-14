@@ -1,5 +1,6 @@
 import type { Flow } from "../flow/schema.js";
 import type { ModelClient, ModelMessage } from "./model.js";
+import { ReplyWriter, type ReplyStream } from "./reply-stream.js";
 import { runNode } from "./run-node.js";
 import { InMemorySessionStore, type Session, type SessionStore, type TranscriptEntry } from "./session.js";
 import { renderTemplate } from "./templating.js";
@@ -69,8 +70,11 @@ export class FlowEngine {
     this.#maxHops = maxHops;
   }
 
-  /** Opens a Call: runs the start Node with no Caller input and returns the Receptionist's greeting. */
-  async start(callId: string, ctx: StartContext): Promise<TurnResult> {
+  /**
+   * Opens a Call: runs the start Node with no Caller input and returns the Receptionist's greeting.
+   * `stream`, if given, shows the greeting as it is generated (see `ReplyStream`).
+   */
+  async start(callId: string, ctx: StartContext, stream?: ReplyStream): Promise<TurnResult> {
     if (await this.#store.get(callId)) throw new Error(`Call "${callId}" is already open`);
     const node = this.#node(this.#flow.start_node);
     const now = Date.now();
@@ -85,13 +89,23 @@ export class FlowEngine {
     };
 
     const messages: ModelMessage[] = [{ role: "user", content: CALL_CONNECTED }];
-    const run = await runNode({
-      flow: this.#flow,
-      node,
-      client: this.#client,
-      variables: session.variables,
-      messages,
-    });
+    const writer = new ReplyWriter(stream);
+    writer.beginHop();
+    let run;
+    try {
+      run = await runNode({
+        flow: this.#flow,
+        node,
+        client: this.#client,
+        variables: session.variables,
+        messages,
+        onTextDelta: (delta) => writer.push(delta),
+      });
+    } catch (error) {
+      writer.abort();
+      throw error;
+    }
+    writer.finish(run.text);
 
     session.transcript.push({ role: "receptionist", text: run.text });
     await this.#store.put(session);
@@ -101,9 +115,13 @@ export class FlowEngine {
   /**
    * Answers one Caller utterance from the Call's current Node. Idempotent on `turnId`: repeating a Turn returns its
    * stored result without calling the model or touching the transcript. Turns on one Call run one at a time.
+   * `stream`, if given, shows the reply as it is generated (see `ReplyStream`) and is left showing exactly the
+   * reply. A repeated Turn shows its stored reply at once.
    */
-  handleUser(callId: string, utterance: string, turnId: string): Promise<TurnResult> {
-    const run = (this.#queues.get(callId) ?? Promise.resolve()).then(() => this.#turn(callId, utterance, turnId));
+  handleUser(callId: string, utterance: string, turnId: string, stream?: ReplyStream): Promise<TurnResult> {
+    const run = (this.#queues.get(callId) ?? Promise.resolve()).then(() =>
+      this.#turn(callId, utterance, turnId, new ReplyWriter(stream)),
+    );
     const tail = run.catch(() => undefined);
     this.#queues.set(callId, tail);
     void tail.then(() => {
@@ -112,14 +130,24 @@ export class FlowEngine {
     return run;
   }
 
-  async #turn(callId: string, utterance: string, turnId: string): Promise<TurnResult> {
+  async #turn(callId: string, utterance: string, turnId: string, writer: ReplyWriter): Promise<TurnResult> {
     const session = await this.#store.get(callId);
     if (!session) throw new Error(`Call "${callId}" does not exist`);
     const stored = session.turns[turnId];
-    if (stored) return stored;
+    if (stored) {
+      writer.finish(stored.reply);
+      return stored;
+    }
     if (session.endState !== undefined) throw new Error(`Call "${callId}" has ended (${session.endState})`);
 
-    const outcome = await this.#advance(session, utterance);
+    let outcome;
+    try {
+      outcome = await this.#advance(session, utterance, writer);
+    } catch (error) {
+      writer.abort();
+      throw error;
+    }
+    writer.finish(outcome.reply);
     const result: TurnResult = {
       reply: outcome.reply,
       nodeId: outcome.endState ?? outcome.nodeId,
@@ -142,12 +170,13 @@ export class FlowEngine {
    * Call: the End state's message is spoken after anything said so far, even if nothing was. At most `maxHops` Nodes
    * run per utterance, so a routing loop stops on the Node it reached. Does not change the session.
    */
-  async #advance(session: Session, utterance: string): Promise<Advance> {
+  async #advance(session: Session, utterance: string, writer: ReplyWriter): Promise<Advance> {
     const history: ModelMessage[] = [...modelHistory(session.transcript), { role: "user", content: utterance }];
     const said: string[] = [];
     let node = this.#node(session.currentNodeId);
 
     for (let hop = 1; ; hop++) {
+      writer.beginHop();
       const run = await runNode({
         flow: this.#flow,
         node,
@@ -156,6 +185,7 @@ export class FlowEngine {
         messages: [...history],
         edges: this.#flow.edges.filter((edge) => edge.from === node.id),
         ...(said.length > 0 ? { alreadySaid: said.join(" ") } : {}),
+        onTextDelta: (delta) => writer.push(delta),
       });
 
       // A refusal discards the whole Turn, so the Call stays where it was and nothing half-said is spoken.
