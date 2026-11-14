@@ -100,7 +100,7 @@ The flow is data (JSON), and the engine interprets it. Later phases add nodes by
 | Thinking blocks | Pass `thinking` blocks back unchanged inside a single turn's tool loop. They are bound to the model and conversation (history-editing check), so the engine does not replay them across turns. `session.transcript` stays plain text, and nodes with different system prompts never share thinking blocks. |
 | Sampling params | Do not send `temperature`, `top_p` or `top_k`. Non-default values are rejected on Sonnet 5.5. |
 | Prefill | Not supported. Steer through the system prompt. |
-| Output length | `max_tokens` is small by default (300). Replies are spoken aloud, so 1–3 short sentences with no markdown. |
+| Output length | `max_tokens` is 1024. Adaptive thinking counts toward `max_tokens` even though it is not returned, so a small cap such as 300 can cut a reply off after a long think. Replies are spoken aloud, so 1–3 short sentences with no markdown, enforced by the Flow's instructions rather than by the cap. |
 | Refusals | Always check `stop_reason` before reading `content`. Enable server-side fallback (`betas: ["server-side-fallback-2026-07-01"]`, `fallbacks: "default"`) on Anthropic-provider calls. It only retries `cyber` and `frontier_llm` declines. `bio`, `reasoning_extraction` and `general_harms` refusals are not retried, so the engine must handle any `stop_reason: "refusal"` by speaking a safe line and staying on the current node. With `between_tools`, a fallback to Sonnet 5 runs with thinking disabled. |
 | Model-specific flags | Thinking, effort and fallback options are Anthropic-only. The router strips them for OpenRouter models. |
 
