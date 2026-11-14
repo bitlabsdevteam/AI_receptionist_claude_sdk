@@ -1,0 +1,35 @@
+{
+  "base_instructions": "You are {{assistant_name}}, the virtual receptionist for {{company_name}}. Your replies are spoken aloud, so keep them to 1 to 3 short sentences with no markdown, lists or emojis.",
+  "default_model": "anthropic/claude-sonnet-5-5",
+  "variables": {
+    "assistant_name": "Ava",
+    "company_name": "Acme Co."
+  },
+  "start_node": "start",
+  "end_states": {
+    "goodbye": {
+      "message": "Thank you for calling. Goodbye."
+    }
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "prompt",
+      "model": "anthropic/claude-sonnet-5-5",
+      "effort": "low",
+      "tools": [],
+      "instructions": "Greet the caller warmly, say your name and company, and ask how you can help."
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_start_goodbye",
+      "from": "start",
+      "to": "goodbye",
+      "condition": {
+        "type": "llm",
+        "prompt": "The caller says they need nothing else, wants to end the call, or says goodbye."
+      }
+    }
+  ]
+}
