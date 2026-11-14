@@ -41,7 +41,9 @@ export class AnthropicModelClient implements ModelClient {
     });
 
     let sawText = false;
+    const toolInputs = new ToolInputTracker();
     stream.on("streamEvent", (event) => {
+      toolInputs.observe(event);
       if (event.type === "content_block_start" && event.content_block.type === "text") {
         if (sawText) onTextDelta?.(" ");
         sawText = true;
@@ -50,7 +52,7 @@ export class AnthropicModelClient implements ModelClient {
       }
     });
 
-    return toModelResponse(await stream.finalMessage());
+    return toModelResponse(await stream.finalMessage(), toolInputs.completeIds);
   }
 }
 
@@ -75,15 +77,45 @@ function toToolParam(tool: ModelTool): Anthropic.Beta.BetaTool {
   };
 }
 
-function toModelResponse(message: Anthropic.Beta.BetaMessage): ModelResponse {
+/**
+ * Tells which tool calls arrived with their whole input. The SDK turns a cut-off input into a best-effort object (`{}`
+ * or a half-filled one) without saying so, so this checks the raw JSON of each tool call once its block has closed.
+ */
+class ToolInputTracker {
+  readonly #buffers = new Map<number, { id: string; json: string }>();
+  readonly completeIds = new Set<string>();
+
+  observe(event: Anthropic.Beta.BetaRawMessageStreamEvent): void {
+    if (event.type === "content_block_start" && event.content_block.type === "tool_use") {
+      this.#buffers.set(event.index, { id: event.content_block.id, json: "" });
+    } else if (event.type === "content_block_delta" && event.delta.type === "input_json_delta") {
+      const buffer = this.#buffers.get(event.index);
+      if (buffer) buffer.json += event.delta.partial_json;
+    } else if (event.type === "content_block_stop") {
+      const buffer = this.#buffers.get(event.index);
+      if (buffer && isJsonObject(buffer.json)) this.completeIds.add(buffer.id);
+    }
+  }
+}
+
+/** A tool call with no input deltas has the empty input. */
+function isJsonObject(json: string): boolean {
+  try {
+    const value: unknown = JSON.parse(json === "" ? "{}" : json);
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
+function toModelResponse(message: Anthropic.Beta.BetaMessage, completeToolCalls: ReadonlySet<string>): ModelResponse {
   const stopReason = toStopReason(message.stop_reason);
-  // A refusal or the token limit can cut a tool call off mid-input, so it is never used.
-  const keepToolCalls = stopReason !== "refusal" && stopReason !== "max_tokens";
   const content: ContentBlock[] = [];
   for (const block of message.content) {
     if (block.type === "text") {
       content.push({ type: "text", text: block.text });
-    } else if (block.type === "tool_use" && keepToolCalls) {
+    } else if (block.type === "tool_use" && completeToolCalls.has(block.id)) {
+      // Whatever the stop reason, a tool call that arrived whole is real. One cut off mid-input is never used.
       const input = typeof block.input === "object" && block.input !== null ? (block.input as Record<string, unknown>) : {};
       content.push({ type: "tool_use", id: block.id, name: block.name, input });
     }

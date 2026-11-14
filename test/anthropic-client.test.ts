@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
 import { AnthropicModelClient, FALLBACK_BETA } from "../src/engine/anthropic-client.js";
 import type { ModelRequest } from "../src/engine/model.js";
+import { transitionToolName } from "../src/engine/run-node.js";
 import { finish, messageStart, sse, textBlock, thinkingBlock, toolBlock, type Json } from "./sse.js";
 
 /**
@@ -221,7 +222,28 @@ describe("the reply from Anthropic", () => {
     expect(response.content.some((b) => b.type === "tool_use")).toBe(false);
   });
 
-  it("drops a tool call cut off by max_tokens", async () => {
+  it("keeps a complete tool call when the reply stopped on max_tokens, so a goodbye is not lost", async () => {
+    const { client } = clientWith(() =>
+      sse([
+        messageStart,
+        ...textBlock(0, "Okay."),
+        ...toolBlock(1, transitionToolName({ id: "e_start_goodbye" }), '{"reason":', '"done"}'),
+        ...finish("max_tokens"),
+      ]),
+    );
+
+    const response = await client.createMessage(REQUEST);
+
+    expect(response).toEqual({
+      content: [
+        { type: "text", text: "Okay." },
+        { type: "tool_use", id: "toolu_1", name: "transition__e_start_goodbye", input: { reason: "done" } },
+      ],
+      stopReason: "max_tokens",
+    });
+  });
+
+  it("drops a tool call cut off mid-input by max_tokens, and still returns the rest", async () => {
     const { client } = clientWith(() =>
       sse([messageStart, ...textBlock(0, "Okay."), ...toolBlock(1, "transition__e_start_goodbye", '{"rea'), ...finish("max_tokens")]),
     );
@@ -229,6 +251,16 @@ describe("the reply from Anthropic", () => {
     const response = await client.createMessage(REQUEST);
 
     expect(response).toEqual({ content: [{ type: "text", text: "Okay." }], stopReason: "max_tokens" });
+  });
+
+  it("drops a tool call whose input stops after a value that looks complete", async () => {
+    const { client } = clientWith(() =>
+      sse([messageStart, ...toolBlock(0, "transition__e_start_goodbye", '{"reason":"do'), ...finish("max_tokens")]),
+    );
+
+    const response = await client.createMessage(REQUEST);
+
+    expect(response).toEqual({ content: [], stopReason: "max_tokens" });
   });
 
   it("maps any other stop reason to other", async () => {

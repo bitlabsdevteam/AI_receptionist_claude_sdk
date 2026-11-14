@@ -65,7 +65,7 @@ Tests are vitest files in `test/` and run offline. `test/fake-claude.ts` is a sc
 - Dependencies are pinned to exact versions, including `@anthropic-ai/sdk`. The SDK is called through `client.beta.messages.stream`, because `betas` and `fallbacks` do not exist on the plain Messages API.
 - Never send `temperature`, `top_p` or `top_k`. Never disable thinking (`{type:"disabled"}` is a 400 on Sonnet 5.5) and never use prefill. Always set effort explicitly.
 - Adaptive thinking counts toward `max_tokens` even though it is not returned, which is why the cap is 1024 and not the 300 an earlier draft planned. Replies stay short because the Flow's instructions say 1 to 3 sentences with no markdown, since every reply is read aloud.
-- A tool call cut off by a refusal or by `max_tokens` is dropped by the client, never used.
+- The client keeps every tool call that arrived with complete JSON input, whatever the stop reason (so a truncated reply still takes a `transition__` Edge), and drops one cut off mid-input. It checks the raw stream JSON for this, because the SDK silently turns a cut-off input into `{}` or a half-filled object. The engine still never takes an Edge from a refusal.
 - vitest has no config and uses its default include globs. Run from the main checkout, it also picks up copies of the tests inside `.claude/worktrees/*`, so run it from inside the checkout or worktree you are working in.
 - `.env.example` lists `OPENROUTER_API_KEY` and `DB_PATH`, but nothing reads them yet.
 
