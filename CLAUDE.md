@@ -42,7 +42,7 @@ The Flow is data and the engine interprets it. Changing how a Call behaves usual
 - Each Edge from the current Node is offered to the model as a strict tool named `transition__<edge_id>`, described by the Edge's `condition.prompt`. Strict tools, not forced `tool_choice`, are how the engine steers the model, because forced `tool_choice` is a 400 on Sonnet 5.5.
 - If the model calls one, the engine moves to the target and re-runs it on the same utterance. Text already said this Turn is injected into the next Node's system prompt so it does not greet again, and the reply is the pieces joined with a single space. If several Edges are called, the first wins.
 - An Edge whose `to` is an End state finishes the Call: the End state's templated `message` is spoken after anything already said (even nothing), `Session.endState` is set and the result has `ended: true`. The Node's instructions must tell the model not to say a farewell of its own. An ended Call rejects further Turns, though a replay of the ending Turn still returns its stored result.
-- A refusal (`stopReason: "refusal"`, which is a normal HTTP 200) discards the whole Turn: the Call stays on its Node and `REFUSAL_LINE` is spoken. An empty reply becomes `EMPTY_REPLY_LINE`. A refused response never takes an Edge.
+- A refusal (`stopReason: "refusal"`, which is a normal HTTP 200) discards the whole Turn: the Call stays on its Node and `REFUSAL_LINE` is spoken. An empty reply becomes `EMPTY_REPLY_LINE`. A refused response never takes an Edge. `start()` handles a refused or empty greeting too, with a safe greeting built from the Flow's `receptionist_name` and `company_name` variables, and never stores the refused text. A refused Turn stays in the transcript (marked `refused`; a repeated turn id replays its stored result from `Session.turns`) but is left out of the history sent to the model, and the history never contains an empty message.
 - `{{var}}` templating (`templating.ts`) applies to instructions and End state messages. An unknown variable throws `UnknownVariableError`.
 
 ### Turns, transcript and idempotency
@@ -55,27 +55,27 @@ The Flow is data and the engine interprets it. Changing how a Call behaves usual
 
 ## Testing
 
-Tests are vitest files in `test/` and run offline. `test/fake-claude.ts` is a scripted `ModelClient`: build it with the ordered responses the model would give (`say("...")`, `reply([...blocks], stopReason)`, `failAfter(text, error)`), inject it with `new FlowEngine(flow, { client })`, then assert on `TurnResult`, the session in the store, streamed text and the recorded `requests` (system prompt, tools, `model`, `effort`, `maxTokens`). Requests are cloned when recorded, so later mutation by the engine does not leak into them. It streams word by word like the real client. `test/sse.ts` builds canned HTTP streams, so `anthropic-client.test.ts` exercises the real SDK with no network. Any new Flow behaviour should be testable this way.
+Tests are vitest files in `test/` and run offline. `test/fake-claude.ts` is a scripted `ModelClient`: build it with the ordered responses the model would give (`say("...")`, `reply([...blocks], stopReason)`, `failAfter(text, error)`, plus the shared `transition(edgeId, text?)`, `goodbye(text?)`, `flowWithBilling(flow)`, `GREETING` and `GOODBYE_MESSAGE`; build tool names with `transitionToolName`), inject it with `new FlowEngine(flow, { client })`, then assert on `TurnResult`, the session in the store, streamed text and the recorded `requests` (system prompt, tools, `model`, `effort`, `maxTokens`). Requests are cloned when recorded, so later mutation by the engine does not leak into them. It streams word by word like the real client. `test/sse.ts` builds canned HTTP streams, so `anthropic-client.test.ts` exercises the real SDK with no network. Any new Flow behaviour should be testable this way.
 
 `test/live.test.ts` is the opt-in check against the real model. It asserts facts that hold on every run (name, no markdown, closing message appears once, stream equals reply), not exact wording.
 
 ## Gotchas
 
-- Node 24 is required (`engines`), and `process.loadEnvFile` is used for `.env`. The PRD still says Node 22+.
+- Node 24 is required (`engines`), and `process.loadEnvFile` is used for `.env`.
 - Dependencies are pinned to exact versions, including `@anthropic-ai/sdk`. The SDK is called through `client.beta.messages.stream`, because `betas` and `fallbacks` do not exist on the plain Messages API.
 - Never send `temperature`, `top_p` or `top_k`. Never disable thinking (`{type:"disabled"}` is a 400 on Sonnet 5.5) and never use prefill. Always set effort explicitly.
 - Adaptive thinking counts toward `max_tokens` even though it is not returned, which is why the cap is 1024 and not the 300 an earlier draft planned. Replies stay short because the Flow's instructions say 1 to 3 sentences with no markdown, since every reply is read aloud.
 - The client keeps every tool call that arrived with complete JSON input, whatever the stop reason (so a truncated reply still takes a `transition__` Edge), and drops one cut off mid-input. It checks the raw stream JSON for this, because the SDK silently turns a cut-off input into `{}` or a half-filled object. The engine still never takes an Edge from a refusal.
 - vitest has no config and uses its default include globs. Run from the main checkout, it also picks up copies of the tests inside `.claude/worktrees/*`, so run it from inside the checkout or worktree you are working in.
-- `.env.example` lists `OPENROUTER_API_KEY` and `DB_PATH`, but nothing reads them yet.
+- `.env.example` lists `OPENROUTER_API_KEY` and `DB_PATH` (marked "not used yet" there), but nothing reads them.
 
 ## Not built yet
 
-From PRD section 15 (Phase 2): `speak` and `tool` Node types, `expression` Edges, post-verification business Nodes (account lookup, transfer), the Telnyx TeXML voice adapter with a status callback for cleanup, an external session store, webhook signature verification, AWS deployment. Also not built, though the PRD's Phase 1 plans them: the `verify` Node and SQLite, a tool registry and business tools (a Node's `tools` list must be empty today, and `runNode` ignores business tool calls), the HTTP adapter, an OpenRouter client (the schema accepts `openrouter/...` models but `AnthropicModelClient` throws on them), and `MAX_HOPS` / `SESSION_TTL_SECS` configuration.
+From PRD section 15 (Phase 2): `speak` and `tool` Node types, `expression` Edges, post-verification business Nodes (account lookup, transfer), the Telnyx TeXML voice adapter with a status callback for cleanup, an external session store, webhook signature verification, AWS deployment. Also not built, though the PRD's Phase 1 plans them: the `verify` Node and SQLite, a tool registry and business tools (a Node's `tools` list must be empty today, and `runNode` ignores business tool calls), the HTTP adapter, the `max_tool_rounds` Node setting (the schema accepts it, but nothing reads it until business tools exist), the `Action` type in `turn.ts` (reserved for transfer and hang-up, and `TurnResult.actions` is always empty), an OpenRouter client (the schema accepts `openrouter/...` models but `AnthropicModelClient` throws on them), and `MAX_HOPS` / `SESSION_TTL_SECS` configuration.
 
 Known gaps:
 
-- `start()` ignores `stopReason`, so a refused or empty greeting is shown as is. Only `handleUser` applies `REFUSAL_LINE` and `EMPTY_REPLY_LINE`. It also offers no transition tools while greeting.
+- `start()` offers no transition tools while greeting, so the Call cannot end on its first reply.
 - The live Anthropic path has never been exercised against the real API. `AnthropicModelClient` is tested only against canned streams, and `npm run chat` and `npm run test:live` have not been run with a key.
 - Nothing expires a Call that is abandoned mid-way, since `InMemorySessionStore` has no TTL.
 

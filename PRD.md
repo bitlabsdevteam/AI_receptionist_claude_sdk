@@ -268,7 +268,7 @@ receptionist/
 └── test/                   # vitest; fake-claude.ts, routing.test.ts, verify.test.ts
 ```
 
-Stack: Node 22+, TypeScript (strict), `@anthropic-ai/sdk`, `zod`, `better-sqlite3`, `vitest`, `tsx`. HTTP adapter: Hono or Fastify (decide at M3).
+Stack: Node 24+, TypeScript (strict), `@anthropic-ai/sdk`, `zod`, `better-sqlite3`, `vitest`, `tsx`. HTTP adapter: Hono or Fastify (decide at M3).
 
 ## 9. Configuration
 
