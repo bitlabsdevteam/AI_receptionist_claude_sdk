@@ -1,5 +1,5 @@
 import type { Flow, FlowNode } from "../flow/schema.js";
-import { parseModelRef, type ContentBlock, type ModelClient, type ModelMessage } from "./model.js";
+import { parseModelRef, type ContentBlock, type ModelClient, type ModelMessage, type ModelResponse } from "./model.js";
 import { renderTemplate } from "./templating.js";
 
 /** Replies are spoken aloud, so they stay short. */
@@ -20,6 +20,8 @@ export interface NodeRun {
   /** What the Receptionist says: the text blocks of the model's reply, joined. */
   text: string;
   content: ContentBlock[];
+  /** Why the model stopped. `refusal` is a normal response, so the caller must check it before using `text`. */
+  stopReason: ModelResponse["stopReason"];
 }
 
 /**
@@ -48,5 +50,5 @@ export async function runNode(input: RunNodeInput): Promise<NodeRun> {
     .flatMap((block) => (block.type === "text" ? [block.text] : []))
     .join(" ")
     .trim();
-  return { text, content: response.content };
+  return { text, content: response.content, stopReason: response.stopReason };
 }

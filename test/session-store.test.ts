@@ -6,6 +6,7 @@ const session = (): Session => ({
   currentNodeId: "start",
   transcript: [],
   variables: { assistant_name: "Ava" },
+  turns: {},
   createdAt: 1,
   updatedAt: 1,
 });
