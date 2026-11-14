@@ -140,24 +140,24 @@ export class FlowEngine {
     }
     if (session.endState !== undefined) throw new Error(`Call "${callId}" has ended (${session.endState})`);
 
-    let outcome;
+    let advance;
     try {
-      outcome = await this.#advance(session, utterance, writer);
+      advance = await this.#advance(session, utterance, writer);
     } catch (error) {
       writer.abort();
       throw error;
     }
-    writer.finish(outcome.reply);
+    writer.finish(advance.reply);
     const result: TurnResult = {
-      reply: outcome.reply,
-      nodeId: outcome.endState ?? outcome.nodeId,
-      ended: outcome.endState !== undefined,
-      ...(outcome.endState !== undefined ? { endState: outcome.endState } : {}),
+      reply: advance.reply,
+      nodeId: advance.endState ?? advance.nodeId,
+      ended: advance.endState !== undefined,
+      ...(advance.endState !== undefined ? { endState: advance.endState } : {}),
       actions: [],
     };
-    session.currentNodeId = outcome.nodeId;
-    if (outcome.endState !== undefined) session.endState = outcome.endState;
-    session.transcript.push({ role: "caller", text: utterance }, { role: "receptionist", text: outcome.reply });
+    session.currentNodeId = advance.nodeId;
+    if (advance.endState !== undefined) session.endState = advance.endState;
+    session.transcript.push({ role: "caller", text: utterance }, { role: "receptionist", text: advance.reply });
     session.turns[turnId] = result;
     session.updatedAt = Date.now();
     await this.#store.put(session);

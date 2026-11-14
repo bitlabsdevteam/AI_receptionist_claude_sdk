@@ -88,7 +88,7 @@ describe("the request sent to Anthropic", () => {
     expect(FALLBACK_BETA).toBe("server-side-fallback-2026-07-01");
   });
 
-  it("sends the conversation as plain messages", async () => {
+  it("sends the Call so far as plain messages", async () => {
     const { client, sent } = clientWith(() => sse(plainReply));
 
     await client.createMessage(REQUEST);

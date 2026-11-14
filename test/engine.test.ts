@@ -95,7 +95,7 @@ describe("opening a Call", () => {
 
     const session = await store.get("call-1");
     expect(session?.variables).toEqual({
-      assistant_name: "Ava",
+      receptionist_name: "Ava",
       company_name: "Acme Co.",
       caller_number: "+15551230000",
     });

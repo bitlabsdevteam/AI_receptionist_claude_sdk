@@ -106,13 +106,13 @@ describe("talking", () => {
     const { engine } = chat([say(GREETING), say("We are Acme Co."), say("Happy to help.")]);
     const { io, output, asked } = session(["Who are you?", "Thanks."]);
 
-    const outcome = await runChat(engine, io);
+    const chatResult = await runChat(engine, io);
 
     expect(output()).toBe(
       `Receptionist: ${GREETING}\nYou: Who are you?\nReceptionist: We are Acme Co.\nYou: Thanks.\nReceptionist: Happy to help.\nYou: `,
     );
     expect(asked).toHaveLength(3);
-    expect(outcome).toBe("input-closed");
+    expect(chatResult).toBe("input-closed");
   });
 
   it("skips blank lines without calling the model", async () => {
@@ -135,9 +135,9 @@ describe("saying goodbye", () => {
     const { engine } = chat([say(GREETING), goodbye()]);
     const { io, output, asked } = session(["No thanks, goodbye."]);
 
-    const outcome = await runChat(engine, io);
+    const chatResult = await runChat(engine, io);
 
-    expect(outcome).toBe("ended");
+    expect(chatResult).toBe("ended");
     expect(output()).toBe(`Receptionist: ${GREETING}\nYou: No thanks, goodbye.\nReceptionist: ${GOODBYE_MESSAGE}\n`);
     expect(asked).toHaveLength(1);
   });
@@ -193,22 +193,22 @@ describe("a reply that is thrown away", () => {
     const { engine } = chat([say(GREETING), failAfter("Let me che", new Error("connection reset")), say("I'm back.")]);
     const { writes, io } = session(["Hello?", "Hello again?"], 80);
 
-    const outcome = await runChat(engine, io);
+    const chatResult = await runChat(engine, io);
 
     const screen = screenOf(writes, 80);
     expect(screen).not.toContain("Let me che");
     expect(screen).toContain("connection reset");
     expect(screen).toContain("Receptionist: I'm back.");
-    expect(outcome).toBe("input-closed");
+    expect(chatResult).toBe("input-closed");
   });
 
   it("gives up when the greeting cannot be fetched", async () => {
     const { engine } = chat([failAfter("", new Error("401 invalid x-api-key"))]);
     const { io, output, asked } = session(["hello"]);
 
-    const outcome = await runChat(engine, io);
+    const chatResult = await runChat(engine, io);
 
-    expect(outcome).toBe("failed");
+    expect(chatResult).toBe("failed");
     expect(output()).toContain("401 invalid x-api-key");
     expect(asked).toHaveLength(0);
   });

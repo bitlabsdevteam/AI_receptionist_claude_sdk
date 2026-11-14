@@ -12,7 +12,7 @@ describe("loading the shipped receptionist Flow", () => {
     const flow = await loadFlow(SHIPPED_FLOW);
 
     expect(flow.variables).toMatchObject({
-      assistant_name: "Ava",
+      receptionist_name: "Ava",
       company_name: "Acme Co.",
     });
     expect(flow.start_node).toBe("start");

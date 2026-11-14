@@ -22,10 +22,10 @@ export interface ChatOptions {
  * - `input-closed`: the Caller's input ran out.
  * - `failed`: the Call could not be opened.
  */
-export type ChatOutcome = "ended" | "input-closed" | "failed";
+export type ChatResult = "ended" | "input-closed" | "failed";
 
 /** Runs one Call in a terminal: the Receptionist greets first, then the Caller types and replies stream back. */
-export async function runChat(engine: FlowEngine, io: ChatIO, options: ChatOptions = {}): Promise<ChatOutcome> {
+export async function runChat(engine: FlowEngine, io: ChatIO, options: ChatOptions = {}): Promise<ChatResult> {
   const { label = "Receptionist", callId = "terminal" } = options;
   const reply = new TerminalReply(io.write, `${label}: `, io.columns);
 

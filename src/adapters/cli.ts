@@ -54,10 +54,10 @@ async function main(): Promise<number> {
     },
   };
 
-  const outcome = await runChat(engine, io, { label: flow.variables.assistant_name ?? "Receptionist" });
-  if (outcome === "input-closed") stdout.write("\n");
+  const chatResult = await runChat(engine, io, { label: flow.variables.receptionist_name ?? "Receptionist" });
+  if (chatResult === "input-closed") stdout.write("\n");
   rl.close();
-  return outcome === "failed" ? 1 : 0;
+  return chatResult === "failed" ? 1 : 0;
 }
 
 main().then(

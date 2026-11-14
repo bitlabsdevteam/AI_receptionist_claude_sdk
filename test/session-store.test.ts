@@ -5,7 +5,7 @@ const session = (): Session => ({
   callId: "call-1",
   currentNodeId: "start",
   transcript: [],
-  variables: { assistant_name: "Ava" },
+  variables: { receptionist_name: "Ava" },
   turns: {},
   createdAt: 1,
   updatedAt: 1,
@@ -34,8 +34,8 @@ describe("InMemorySessionStore", () => {
     await store.put(session());
 
     const copy = await store.get("call-1");
-    copy!.variables.assistant_name = "Bea";
+    copy!.variables.receptionist_name = "Bea";
 
-    expect((await store.get("call-1"))?.variables.assistant_name).toBe("Ava");
+    expect((await store.get("call-1"))?.variables.receptionist_name).toBe("Ava");
   });
 });

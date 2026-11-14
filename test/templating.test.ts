@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { renderTemplate, UnknownVariableError } from "../src/engine/templating.js";
 
 describe("renderTemplate", () => {
-  const vars = { assistant_name: "Ava", company_name: "Acme Co." };
+  const vars = { receptionist_name: "Ava", company_name: "Acme Co." };
 
   it("replaces every {{var}}, including repeats and inner whitespace", () => {
-    expect(renderTemplate("I'm {{assistant_name}} at {{ company_name }}. Yes, {{assistant_name}}.", vars)).toBe(
+    expect(renderTemplate("I'm {{receptionist_name}} at {{ company_name }}. Yes, {{receptionist_name}}.", vars)).toBe(
       "I'm Ava at Acme Co.. Yes, Ava.",
     );
   });

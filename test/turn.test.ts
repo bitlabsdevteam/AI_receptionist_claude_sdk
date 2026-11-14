@@ -200,7 +200,7 @@ describe("what the Receptionist may promise", () => {
     const startNode = flow.nodes.find((n) => n.id === flow.start_node)!;
     const system = client.requests[1]!.system;
     expect(system).toContain(
-      startNode.instructions.replaceAll("{{assistant_name}}", "Ava").replaceAll("{{company_name}}", "Acme Co."),
+      startNode.instructions.replaceAll("{{receptionist_name}}", "Ava").replaceAll("{{company_name}}", "Acme Co."),
     );
     expect(system).not.toContain("{{");
   });
