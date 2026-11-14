@@ -3,9 +3,7 @@ import { FlowEngine } from "../src/engine/engine.js";
 import { InMemorySessionStore } from "../src/engine/session.js";
 import { loadFlow } from "../src/flow/load.js";
 import type { Flow } from "../src/flow/schema.js";
-import { FakeClaude, say } from "./fake-claude.js";
-
-const GREETING = "Hello, this is Ava from Acme Co. How can I help you today?";
+import { FakeClaude, GREETING, say } from "./fake-claude.js";
 
 let flow: Flow;
 beforeAll(async () => {

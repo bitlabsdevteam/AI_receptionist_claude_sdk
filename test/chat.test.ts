@@ -1,26 +1,15 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { runChat, type ChatIO } from "../src/adapters/chat.js";
 import { FlowEngine, REFUSAL_LINE } from "../src/engine/engine.js";
-import type { ContentBlock, ModelResponse } from "../src/engine/model.js";
+import type { ModelResponse } from "../src/engine/model.js";
 import { loadFlow } from "../src/flow/load.js";
 import type { Flow } from "../src/flow/schema.js";
-import { FakeClaude, failAfter, reply, say, type ScriptedFailure } from "./fake-claude.js";
-
-const GREETING = "Hello, this is Ava from Acme Co. How can I help you today?";
-const GOODBYE_MESSAGE = "Thank you for calling. Goodbye.";
+import { FakeClaude, GOODBYE_MESSAGE, GREETING, failAfter, goodbye, reply, say, type ScriptedFailure } from "./fake-claude.js";
 
 let flow: Flow;
 beforeAll(async () => {
   flow = await loadFlow("flows/receptionist.json");
 });
-
-function goodbye(text?: string): ModelResponse {
-  const content: ContentBlock[] = [
-    ...(text ? [{ type: "text" as const, text }] : []),
-    { type: "tool_use", id: "t1", name: "transition__e_start_goodbye", input: { reason: "done" } },
-  ];
-  return reply(content, "tool_use");
-}
 
 /** What a terminal of `columns` width shows after `writes`. Understands newline, carriage return, cursor up and clear-below. */
 function screenOf(writes: readonly string[], columns: number): string {

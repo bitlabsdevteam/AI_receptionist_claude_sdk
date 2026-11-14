@@ -35,6 +35,9 @@ function clientWith(respond: () => Response) {
   return { client: new AnthropicModelClient(sdk), sent };
 }
 
+/** The name of the tool for the sample Flow's goodbye Edge. */
+const GOODBYE_TOOL = transitionToolName({ id: "e_start_goodbye" });
+
 const REQUEST: ModelRequest = {
   provider: "anthropic",
   model: "claude-sonnet-5-5",
@@ -46,7 +49,7 @@ const REQUEST: ModelRequest = {
   ],
   tools: [
     {
-      name: "transition__e_start_goodbye",
+      name: GOODBYE_TOOL,
       description: "The caller wants to end the call.",
       inputSchema: {
         type: "object",
@@ -100,7 +103,7 @@ describe("the request sent to Anthropic", () => {
 
     expect(sent[0]!.body.tools).toEqual([
       {
-        name: "transition__e_start_goodbye",
+        name: GOODBYE_TOOL,
         description: "The caller wants to end the call.",
         strict: true,
         input_schema: REQUEST.tools[0]!.inputSchema,
@@ -180,7 +183,7 @@ describe("the reply from Anthropic", () => {
         messageStart,
         ...thinkingBlock(0),
         ...textBlock(1, "Sure."),
-        ...toolBlock(2, "transition__e_start_goodbye", '{"reason":', '"done"}'),
+        ...toolBlock(2, GOODBYE_TOOL, '{"reason":', '"done"}'),
         ...textBlock(3, "Bye."),
         ...finish("tool_use"),
       ]),
@@ -192,7 +195,7 @@ describe("the reply from Anthropic", () => {
     expect(deltas).toEqual(["Sure.", " ", "Bye."]);
     expect(response.content).toEqual([
       { type: "text", text: "Sure." },
-      { type: "tool_use", id: "toolu_2", name: "transition__e_start_goodbye", input: { reason: "done" } },
+      { type: "tool_use", id: "toolu_2", name: GOODBYE_TOOL, input: { reason: "done" } },
       { type: "text", text: "Bye." },
     ]);
     expect(response.stopReason).toBe("tool_use");
@@ -209,7 +212,7 @@ describe("the reply from Anthropic", () => {
       sse([
         messageStart,
         ...textBlock(0, "Sure, here"),
-        ...toolBlock(1, "transition__e_start_goodbye", '{"rea'),
+        ...toolBlock(1, GOODBYE_TOOL, '{"rea'),
         ...finish("refusal", { stop_details: { type: "refusal", category: "cyber", explanation: null } }),
       ]),
     );
@@ -227,7 +230,7 @@ describe("the reply from Anthropic", () => {
       sse([
         messageStart,
         ...textBlock(0, "Okay."),
-        ...toolBlock(1, transitionToolName({ id: "e_start_goodbye" }), '{"reason":', '"done"}'),
+        ...toolBlock(1, GOODBYE_TOOL, '{"reason":', '"done"}'),
         ...finish("max_tokens"),
       ]),
     );
@@ -237,7 +240,7 @@ describe("the reply from Anthropic", () => {
     expect(response).toEqual({
       content: [
         { type: "text", text: "Okay." },
-        { type: "tool_use", id: "toolu_1", name: "transition__e_start_goodbye", input: { reason: "done" } },
+        { type: "tool_use", id: "toolu_1", name: GOODBYE_TOOL, input: { reason: "done" } },
       ],
       stopReason: "max_tokens",
     });
@@ -245,7 +248,7 @@ describe("the reply from Anthropic", () => {
 
   it("drops a tool call cut off mid-input by max_tokens, and still returns the rest", async () => {
     const { client } = clientWith(() =>
-      sse([messageStart, ...textBlock(0, "Okay."), ...toolBlock(1, "transition__e_start_goodbye", '{"rea'), ...finish("max_tokens")]),
+      sse([messageStart, ...textBlock(0, "Okay."), ...toolBlock(1, GOODBYE_TOOL, '{"rea'), ...finish("max_tokens")]),
     );
 
     const response = await client.createMessage(REQUEST);
@@ -255,7 +258,7 @@ describe("the reply from Anthropic", () => {
 
   it("drops a tool call whose input stops after a value that looks complete", async () => {
     const { client } = clientWith(() =>
-      sse([messageStart, ...toolBlock(0, "transition__e_start_goodbye", '{"reason":"do'), ...finish("max_tokens")]),
+      sse([messageStart, ...toolBlock(0, GOODBYE_TOOL, '{"reason":"do'), ...finish("max_tokens")]),
     );
 
     const response = await client.createMessage(REQUEST);

@@ -1,28 +1,18 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { FlowEngine } from "../src/engine/engine.js";
-import type { ContentBlock, ModelResponse } from "../src/engine/model.js";
+import type { ModelResponse } from "../src/engine/model.js";
+import { transitionToolName } from "../src/engine/run-node.js";
 import { InMemorySessionStore } from "../src/engine/session.js";
 import { loadFlow } from "../src/flow/load.js";
-import { parseFlow, type Flow } from "../src/flow/schema.js";
-import { FakeClaude, reply, say } from "./fake-claude.js";
+import type { Flow } from "../src/flow/schema.js";
+import { FakeClaude, GOODBYE_MESSAGE, GREETING, flowWithBilling, reply, say, transition } from "./fake-claude.js";
 
-const GREETING = "Hello, this is Ava from Acme Co. How can I help you today?";
-const GOODBYE_MESSAGE = "Thank you for calling. Goodbye.";
 const DONE = "No, that's all, thanks.";
 
 let flow: Flow;
 beforeAll(async () => {
   flow = await loadFlow("flows/receptionist.json");
 });
-
-/** A scripted model reply that calls an Edge's transition tool, optionally with text before it. */
-function transition(edgeId: string, text?: string): ModelResponse {
-  const content: ContentBlock[] = [
-    ...(text ? [{ type: "text" as const, text }] : []),
-    { type: "tool_use", id: `toolu_${edgeId}`, name: `transition__${edgeId}`, input: { reason: "the caller said so" } },
-  ];
-  return reply(content, "tool_use");
-}
 
 async function openedCall(callFlow: Flow, ...script: ModelResponse[]) {
   const client = new FakeClaude([say(GREETING), ...script]);
@@ -47,6 +37,19 @@ describe("the Caller says they are done", () => {
     });
   });
 
+  it("still ends the Call when the model's reply was cut off by max_tokens after a complete goodbye call", async () => {
+    const truncated = reply(transition("e_start_goodbye", "Of course.").content, "max_tokens");
+    const { engine } = await openedCall(flow, truncated);
+
+    const result = await engine.handleUser("call-1", DONE, "turn-1");
+
+    expect(result).toMatchObject({ reply: `Of course. ${GOODBYE_MESSAGE}`, ended: true, endState: "goodbye" });
+  });
+
+  it("names each Edge's tool transition__<edge id>, which is the wire name the model sees", () => {
+    expect(transitionToolName({ id: "e_start_goodbye" })).toBe("transition__e_start_goodbye");
+  });
+
   it("offers the Edge to the model as a strict transition tool described by the Edge's condition", async () => {
     const { engine, client } = await openedCall(flow, transition("e_start_goodbye"));
 
@@ -55,7 +58,7 @@ describe("the Caller says they are done", () => {
     const edge = flow.edges.find((e) => e.id === "e_start_goodbye")!;
     expect(client.requests[1]!.tools).toEqual([
       expect.objectContaining({
-        name: "transition__e_start_goodbye",
+        name: transitionToolName({ id: "e_start_goodbye" }),
         description: edge.condition.prompt,
         strict: true,
         inputSchema: expect.objectContaining({ type: "object", additionalProperties: false }),
@@ -111,7 +114,7 @@ describe("the Caller says they are done", () => {
     const both = reply(
       [
         { type: "tool_use", id: "toolu_1", name: "check_leave_balance", input: { employee_id: "E1001" } },
-        { type: "tool_use", id: "toolu_2", name: "transition__e_start_goodbye", input: { reason: "done" } },
+        { type: "tool_use", id: "toolu_2", name: transitionToolName({ id: "e_start_goodbye" }), input: { reason: "done" } },
       ],
       "tool_use",
     );
@@ -124,7 +127,7 @@ describe("the Caller says they are done", () => {
   });
 
   it("ignores a tool call that is not an Edge the Node offers", async () => {
-    const bogus = reply([{ type: "tool_use", id: "toolu_1", name: "transition__e_nowhere", input: {} }], "tool_use");
+    const bogus = reply([{ type: "tool_use", id: "toolu_1", name: transitionToolName({ id: "e_nowhere" }), input: {} }], "tool_use");
     const { engine } = await openedCall(flow, bogus);
 
     const result = await engine.handleUser("call-1", DONE, "turn-1");
@@ -133,7 +136,7 @@ describe("the Caller says they are done", () => {
   });
 
   it("never takes an Edge from a refused response, and answers with the safe line", async () => {
-    const refused = reply([{ type: "tool_use", id: "toolu_1", name: "transition__e_start_goodbye", input: {} }], "refusal");
+    const refused = reply([{ type: "tool_use", id: "toolu_1", name: transitionToolName({ id: "e_start_goodbye" }), input: {} }], "refusal");
     const { engine, store } = await openedCall(flow, refused);
 
     const result = await engine.handleUser("call-1", DONE, "turn-1");
@@ -188,39 +191,12 @@ describe("an End state whose message cannot be spoken", () => {
   });
 });
 
-/** The sample Flow plus a `billing` Node, to exercise Edges between Nodes. Only the goodbye Edge ships in the sample. */
-function flowWithBilling(extraEdges: Flow["edges"] = []): Flow {
-  return parseFlow({
-    ...structuredClone(flow),
-    nodes: [
-      ...structuredClone(flow.nodes),
-      {
-        id: "billing",
-        type: "prompt",
-        effort: "medium",
-        model: "anthropic/claude-haiku-5",
-        instructions: "You now help with billing questions for {{company_name}}.",
-      },
-    ],
-    edges: [
-      ...structuredClone(flow.edges),
-      {
-        id: "e_start_billing",
-        from: "start",
-        to: "billing",
-        condition: { type: "llm", prompt: "The caller asks about an invoice or payment." },
-      },
-      ...extraEdges,
-    ],
-  });
-}
-
 describe("an Edge to another Node", () => {
   const BILLING_QUESTION = "I have a question about my invoice.";
 
   it("re-runs the target Node on the same utterance and speaks both parts in one reply", async () => {
     const { engine, client } = await openedCall(
-      flowWithBilling(),
+      flowWithBilling(flow),
       transition("e_start_billing", "Happy to help with that."),
       say("What would you like to know about it?"),
     );
@@ -240,7 +216,7 @@ describe("an Edge to another Node", () => {
 
   it("runs the target Node under its own instructions and model, and tells it what was already said", async () => {
     const { engine, client } = await openedCall(
-      flowWithBilling(),
+      flowWithBilling(flow),
       transition("e_start_billing", "Happy to help with that."),
       say("What would you like to know about it?"),
     );
@@ -257,7 +233,7 @@ describe("an Edge to another Node", () => {
   });
 
   it("offers the target Node its own Edges, not the previous Node's", async () => {
-    const withBack = flowWithBilling([
+    const withBack = flowWithBilling(flow, [
       {
         id: "e_billing_start",
         from: "billing",
@@ -270,15 +246,15 @@ describe("an Edge to another Node", () => {
     await engine.handleUser("call-1", BILLING_QUESTION, "turn-1");
 
     expect(client.requests[1]!.tools.map((t) => t.name)).toEqual([
-      "transition__e_start_goodbye",
-      "transition__e_start_billing",
+      transitionToolName({ id: "e_start_goodbye" }),
+      transitionToolName({ id: "e_start_billing" }),
     ]);
-    expect(client.requests[2]!.tools.map((t) => t.name)).toEqual(["transition__e_billing_start"]);
+    expect(client.requests[2]!.tools.map((t) => t.name)).toEqual([transitionToolName({ id: "e_billing_start" })]);
   });
 
   it("leaves the Call on the target Node, so the next Turn starts there", async () => {
     const { engine, client, store } = await openedCall(
-      flowWithBilling(),
+      flowWithBilling(flow),
       transition("e_start_billing"),
       say("Go ahead."),
       say("It was paid on the 3rd."),
@@ -293,7 +269,7 @@ describe("an Edge to another Node", () => {
   });
 
   it("can chain into an End state from the target Node in the same Turn", async () => {
-    const chained = flowWithBilling([
+    const chained = flowWithBilling(flow, [
       {
         id: "e_billing_goodbye",
         from: "billing",
@@ -309,7 +285,7 @@ describe("an Edge to another Node", () => {
   });
 
   it("answers with a safe line when no Node along the way said anything", async () => {
-    const { engine } = await openedCall(flowWithBilling(), transition("e_start_billing"), say(""));
+    const { engine } = await openedCall(flowWithBilling(flow), transition("e_start_billing"), say(""));
 
     const result = await engine.handleUser("call-1", BILLING_QUESTION, "turn-1");
 
@@ -318,7 +294,7 @@ describe("an Edge to another Node", () => {
 
   it("discards what was said and stays put when a later Node refuses", async () => {
     const { engine, store } = await openedCall(
-      flowWithBilling(),
+      flowWithBilling(flow),
       transition("e_start_billing", "Happy to help with that."),
       reply([], "refusal"),
     );
@@ -333,7 +309,7 @@ describe("an Edge to another Node", () => {
 
 describe("max_hops", () => {
   const loop = () =>
-    flowWithBilling([
+    flowWithBilling(flow, [
       {
         id: "e_billing_start",
         from: "billing",

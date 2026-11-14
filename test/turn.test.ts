@@ -4,9 +4,8 @@ import type { ModelClient, ModelResponse } from "../src/engine/model.js";
 import { InMemorySessionStore } from "../src/engine/session.js";
 import { loadFlow } from "../src/flow/load.js";
 import type { Flow } from "../src/flow/schema.js";
-import { FakeClaude, reply, say } from "./fake-claude.js";
+import { FakeClaude, GREETING, reply, say } from "./fake-claude.js";
 
-const GREETING = "Hello, this is Ava from Acme Co. How can I help you today?";
 const CALLER = "What time do you open?";
 const ANSWER = "I'm sorry, I don't have our opening hours. Is there anything else I can help with?";
 

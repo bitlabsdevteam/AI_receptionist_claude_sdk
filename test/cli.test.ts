@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { transitionToolName } from "../src/engine/run-node.js";
 import { finish, messageStart, sseBody, textBlock, toolBlock, type Json } from "./sse.js";
 
 /**
@@ -39,7 +40,7 @@ async function startFakeApi(): Promise<Fake> {
       const body = JSON.parse(Buffer.concat(chunks).toString()) as Json;
       requests.push(body);
       const events = body.tools
-        ? [messageStart, ...toolBlock(0, "transition__e_start_goodbye", '{"reason":"done"}'), ...finish("tool_use")]
+        ? [messageStart, ...toolBlock(0, transitionToolName({ id: "e_start_goodbye" }),'{"reason":"done"}'), ...finish("tool_use")]
         : [messageStart, ...textBlock(0, ...GREETING_WORDS), ...finish("end_turn")];
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end(sseBody(events));

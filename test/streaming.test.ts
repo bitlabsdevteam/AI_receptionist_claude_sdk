@@ -1,13 +1,9 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { FlowEngine, REFUSAL_LINE } from "../src/engine/engine.js";
-import type { ContentBlock, ModelResponse } from "../src/engine/model.js";
 import type { ReplyStream } from "../src/engine/reply-stream.js";
 import { loadFlow } from "../src/flow/load.js";
-import { parseFlow, type Flow } from "../src/flow/schema.js";
-import { FakeClaude, failAfter, reply, say } from "./fake-claude.js";
-
-const GREETING = "Hello, this is Ava from Acme Co. How can I help you today?";
-const GOODBYE_MESSAGE = "Thank you for calling. Goodbye.";
+import type { Flow } from "../src/flow/schema.js";
+import { FakeClaude, GOODBYE_MESSAGE, GREETING, failAfter, flowWithBilling, reply, say, transition } from "./fake-claude.js";
 
 let flow: Flow;
 beforeAll(async () => {
@@ -29,25 +25,6 @@ function recorder() {
     },
   };
   return { stream, events, screen: () => screen };
-}
-
-function transition(edgeId: string, text?: string): ModelResponse {
-  const content: ContentBlock[] = [
-    ...(text ? [{ type: "text" as const, text }] : []),
-    { type: "tool_use", id: `toolu_${edgeId}`, name: `transition__${edgeId}`, input: { reason: "the caller said so" } },
-  ];
-  return reply(content, "tool_use");
-}
-
-function withBilling(): Flow {
-  return parseFlow({
-    ...flow,
-    nodes: [...flow.nodes, { id: "billing", type: "prompt", instructions: "You help with billing." }],
-    edges: [
-      ...flow.edges,
-      { id: "e_start_billing", from: "start", to: "billing", condition: { type: "llm", prompt: "Caller asks about billing." } },
-    ],
-  });
 }
 
 describe("streaming the Receptionist's reply", () => {
@@ -96,7 +73,7 @@ describe("streaming the Receptionist's reply", () => {
 describe("a Turn that takes an Edge", () => {
   it("streams text said before an Edge to another Node, then the next Node's text, as one continuous reply", async () => {
     const { stream, events, screen } = recorder();
-    const engine = new FlowEngine(withBilling(), {
+    const engine = new FlowEngine(flowWithBilling(flow), {
       client: new FakeClaude([say(GREETING), transition("e_start_billing", "Happy to help."), say("What is the invoice number?")]),
     });
     await engine.start("call-1", {});
@@ -159,7 +136,7 @@ describe("a Turn that is discarded", () => {
 
   it("retracts text from an earlier Node when a later Node in the same Turn refuses", async () => {
     const { stream, screen } = recorder();
-    const engine = new FlowEngine(withBilling(), {
+    const engine = new FlowEngine(flowWithBilling(flow), {
       client: new FakeClaude([say(GREETING), transition("e_start_billing", "Happy to help."), reply([{ type: "text", text: "Well" }], "refusal")]),
     });
     await engine.start("call-1", {});
