@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_MODEL_ID, DEFAULT_STT_MODEL_ID, ElevenLabsVoice } from "../src/voice/elevenlabs.js";
 import type { Player } from "../src/voice/player.js";
+import { recordClip } from "../src/voice/recorder.js";
 import { VoiceError, VoiceInterrupted } from "../src/voice/voice.js";
+import { fakeFfmpeg } from "./fake-ffmpeg.js";
 import { wavClip } from "./wav.js";
 
 const KEY = "sk_test_SECRET_KEY_123";
@@ -307,6 +309,44 @@ describe("ElevenLabsVoice.listen: the recorder", () => {
     const error = await failureOf(new ElevenLabsVoice({ apiKey: KEY, voiceId: "voice/1", fetch }).listen());
     expect(error.message).toMatch(/recorder/i);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("ElevenLabsVoice.listen: push-to-talk with the ffmpeg recorder", () => {
+  it("records until Enter, uploads the clip, returns what was said and leaves no file behind", async () => {
+    const { fetch, calls } = cannedFetch(transcript({ text: " I'd like to book a visit. " }));
+    const ffmpeg = fakeFfmpeg({ clip: wavClip(1000, true) });
+    const waitForEnter = async () => void ffmpeg.events.push("enter");
+    const recorder = () => recordClip({ spawn: ffmpeg.spawn, tempDir: dir, waitForEnter });
+
+    expect(await listener(fetch, ONE_SECOND, { recorder }).listen()).toBe("I'd like to book a visit.");
+
+    expect(ffmpeg.events).toEqual(["start", "enter", "stop"]);
+    const sent = (calls[0]!.init.body as FormData).get("file") as File;
+    expect([...new Uint8Array(await sent.arrayBuffer())]).toEqual([...wavClip(1000, true)]);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it("says what to install when ffmpeg is missing, and uploads nothing", async () => {
+    const { fetch, calls } = cannedFetch();
+    const missing = Object.assign(new Error("spawn ffmpeg ENOENT"), { code: "ENOENT" });
+    const recorder = () =>
+      recordClip({ spawn: fakeFfmpeg({ failWith: missing }).spawn, tempDir: dir, waitForEnter: () => new Promise(() => {}) });
+
+    const error = await failureOf(listener(fetch, ONE_SECOND, { recorder }).listen());
+
+    expect(error.message).toMatch(/brew install ffmpeg/);
+    expect(calls).toHaveLength(0);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it("hears nothing, and uploads nothing, when Enter is pressed twice at once", async () => {
+    const { fetch, calls } = cannedFetch();
+    const recorder = () => recordClip({ spawn: fakeFfmpeg({ clip: wavClip(20, true) }).spawn, tempDir: dir, waitForEnter: async () => {} });
+
+    expect(await listener(fetch, ONE_SECOND, { recorder }).listen()).toBe("");
+    expect(calls).toHaveLength(0);
+    expect(readdirSync(dir)).toEqual([]);
   });
 });
 
