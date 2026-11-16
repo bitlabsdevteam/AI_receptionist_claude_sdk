@@ -205,9 +205,57 @@ describe("what the Caller says", () => {
     expect(Object.keys((await session())?.turns ?? {})).toEqual(["call-1:1"]);
     expect(output()).not.toContain("does not exist");
   });
+
+  it("waits for the line to connect when it arrives before that, and is said after the greeting", async () => {
+    const { phone, line, session } = phoneWith([say(GREETING), say("We are Acme Co.")]);
+    phone.callArrived(CALL, NUMBER);
+
+    phone.callerSaid(CALL, "Who are you?");
+    await settled();
+    // Nothing can be said while the line has not connected, but the Turn is not lost.
+    expect(line.said).toEqual([]);
+
+    phone.lineConnected(CALL);
+    await settled();
+
+    expect(line.saidOn(CALL)).toEqual([GREETING, "We are Acme Co."]);
+    expect(Object.keys((await session())?.turns ?? {})).toEqual(["call-1:1"]);
+  });
 });
 
 describe("what the line is asked to say", () => {
+  it("is handed over only after the Turn has finished, never while its text streams", async () => {
+    const made = phoneWith([say(GREETING), say("We are Acme Co. We are open nine to five.")]);
+    // When the line is asked to say a reply, the Turn that made it must already be on the Call's record.
+    const recorded: boolean[] = [];
+    const say_ = made.line.say.bind(made.line);
+    made.line.say = (callId, text) => {
+      void made.session(callId).then((session) => recorded.push(Object.keys(session?.turns ?? {}).length > 0));
+      say_(callId, text);
+    };
+    let streamed = 0;
+    const createMessage = made.client.createMessage.bind(made.client);
+    made.client.createMessage = (request, onTextDelta) =>
+      createMessage(request, (delta) => {
+        // Whatever has been handed to the line while words are still arriving, none of it is of the reply being made.
+        if (made.line.said.length > 0) {
+          streamed++;
+          expect(made.line.saidOn(CALL)).toEqual([GREETING]);
+        }
+        onTextDelta?.(delta);
+      });
+    made.phone.callArrived(CALL, NUMBER);
+    made.phone.lineConnected(CALL);
+    await settled();
+
+    made.phone.callerSaid(CALL, "Who are you?");
+    await settled();
+
+    expect(streamed).toBeGreaterThan(0);
+    expect(made.line.saidOn(CALL)).toEqual([GREETING, "We are Acme Co. We are open nine to five."]);
+    expect(recorded.at(-1)).toBe(true);
+  });
+
   it("is the finished Turn's whole reply, once, when the Turn ran more than one Node", async () => {
     const { phone, line } = await greetedCall(
       [transition("e_start_billing", "One moment."), say("Let me look at that invoice.")],
