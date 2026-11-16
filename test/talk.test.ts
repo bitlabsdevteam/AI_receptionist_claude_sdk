@@ -1,4 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { ChatIO } from "../src/adapters/chat.js";
 import { runTalk } from "../src/adapters/talk.js";
@@ -387,9 +389,29 @@ describe("the timing line", () => {
 });
 
 describe("the Voice seam", () => {
-  it("does not import from the engine", async () => {
-    const source = await readFile("src/voice/voice.ts", "utf8");
-    expect(source).not.toMatch(/from\s+["'][^"']*engine/);
+  it("imports nothing from the engine, in any file under src/voice/", async () => {
+    const dir = fileURLToPath(new URL("../src/voice/", import.meta.url));
+    const files = (await readdir(dir, { recursive: true })).filter((name) => name.endsWith(".ts"));
+    expect(files).toEqual(expect.arrayContaining(["voice.ts", "elevenlabs.ts", "player.ts", "recorder.ts"]));
+
+    for (const file of files) {
+      const source = await readFile(join(dir, file), "utf8");
+      // Every module a file names, whether after `from`, in a bare `import "..."` or in an `import("...")`.
+      const imported = [...source.matchAll(/\b(?:from|import)\s*\(?\s*["']([^"']+)["']/g)].map((match) => match[1]);
+      expect(imported.filter((module) => module?.includes("engine")), `engine imports in src/voice/${file}`).toEqual([]);
+    }
+  });
+});
+
+describe("a Turn whose request fails after text has streamed", () => {
+  it("speaks none of the discarded text, only the reply of the Turn that then succeeds", async () => {
+    const { engine, voice } = call([say(GREETING), failAfter("We are", new Error("connection lost")), say("We are Acme Co.")]);
+    const { io, output } = terminal(["Who are you?", "Who are you?"]);
+
+    await runTalk(engine, voice, io);
+
+    expect(output()).toContain("(The Receptionist could not answer: connection lost. Please try again.)\n");
+    expect(voice.spoken).toEqual([GREETING, "We are Acme Co."]);
   });
 });
 
