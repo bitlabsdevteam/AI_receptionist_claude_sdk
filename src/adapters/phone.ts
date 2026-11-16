@@ -63,8 +63,13 @@ interface PhoneCall {
 
 /**
  * The rules of a Call on the phone Channel, for every Call on the line at once. It knows the line only as things that
- * happen on it, which are reported by calling the five methods below (a call arrived, the line connected, the Caller
- * said something, interrupted or hung up), and as `PhoneLine`, through which it asks for words to be said.
+ * happen on it, which are reported by calling the methods below (a call arrived, the line connected, the Caller said
+ * something, interrupted or hung up, the connection was lost, the words of a closing were spoken), and as `PhoneLine`,
+ * through which it asks for words to be said, for a Call to be closed with words, or for a hang-up.
+ *
+ * It ends a Call from its own side when a Turn ends it, when two Turns fail in a row, when the greeting cannot be made,
+ * when the connection is lost or when the time limit passes. Each is a request to close with words, made once. A
+ * closing the line never reports as spoken is hung up after `CLOSING_STALL_MS`.
  *
  * Each method returns at once and never throws. The work it starts goes on behind it, one piece at a time for each
  * Call, and Calls do not wait for each other. A report about a Call that never arrived, or that is over, is ignored.
@@ -126,7 +131,7 @@ export class PhoneCalls {
     const call = this.#calls.get(callId);
     const utterance = text.trim();
     // Nothing heard is not a Turn: it reaches nothing and spends no turn id.
-    if (!call || call.closing || utterance === "") return;
+    if (!call || utterance === "") return;
     const heard = this.#now();
     call.work = call.work.then(() => this.#turn(call, utterance, heard));
   }

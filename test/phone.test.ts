@@ -875,14 +875,36 @@ describe("a lost connection", () => {
   });
 
   it("is expected while a Call is being closed, and closes nothing twice", async () => {
-    const { phone, line } = await greetedCall([goodbye()]);
+    const { phone, line, output } = await greetedCall([goodbye()]);
     phone.callerSaid(CALL, "Goodbye");
     await settled();
+    const printed = output();
 
     phone.connectionLost(CALL);
     await settled();
 
     expect(line.closed).toEqual([{ callId: CALL, text: GOODBYE_MESSAGE }]);
+    expect(output()).toBe(printed);
+  });
+
+  it("does not close a Call twice when the greeting fails after the Call was already closed or left", async () => {
+    const { phone, client, line } = phoneWith([failAfter("Hello", new Error("overloaded"))]);
+    const model = holdModel(client);
+    phone.callArrived(CALL, NUMBER);
+    phone.lineConnected(CALL);
+    phone.connectionLost(CALL);
+    await model.answer();
+    expect(line.closed).toEqual([{ callId: CALL, text: TROUBLE_LINE }]);
+
+    const second = phoneWith([failAfter("Hello", new Error("overloaded"))]);
+    const secondModel = holdModel(second.client);
+    second.phone.callArrived(CALL, NUMBER);
+    second.phone.lineConnected(CALL);
+    second.phone.callerHungUp(CALL);
+    await secondModel.answer();
+
+    expect(second.line.closed).toEqual([]);
+    expect(second.line.hungUp).toEqual([]);
   });
 
   it("is ignored for a Call whose Caller hung up, or that never arrived", async () => {
