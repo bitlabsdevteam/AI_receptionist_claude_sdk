@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VoiceError } from "./voice.js";
 
+/** Records the Caller once and returns the clip. `ElevenLabsVoice.listen()` uploads whatever this returns. */
+export type Recorder = () => Promise<Uint8Array>;
+
 /** A running recorder. `stop()` asks it to finish the file; `done` settles once it has exited (rejects if it failed). */
 export interface RecorderProcess {
   stop(): void;

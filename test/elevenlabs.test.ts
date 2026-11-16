@@ -2,9 +2,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, readdirSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_MODEL_ID, ElevenLabsVoice } from "../src/voice/elevenlabs.js";
+import { DEFAULT_MODEL_ID, DEFAULT_STT_MODEL_ID, ElevenLabsVoice } from "../src/voice/elevenlabs.js";
 import type { Player } from "../src/voice/player.js";
-import { VoiceError } from "../src/voice/voice.js";
+import { VoiceError, VoiceInterrupted } from "../src/voice/voice.js";
+import { wavClip } from "./wav.js";
 
 const KEY = "sk_test_SECRET_KEY_123";
 const MP3 = new Uint8Array([0x49, 0x44, 0x33, 1, 2, 3, 4]);
@@ -164,11 +165,187 @@ describe("ElevenLabsVoice.speak", () => {
   });
 });
 
+/** A Voice whose recorder "records" `clip` without starting a process or opening a microphone. */
+function listener(fetch: typeof globalThis.fetch, clip: Uint8Array, extra: Partial<ConstructorParameters<typeof ElevenLabsVoice>[0]> = {}) {
+  return new ElevenLabsVoice({ apiKey: KEY, voiceId: "voice/1", fetch, recorder: async () => clip, ...extra });
+}
+
+const transcript = (body: unknown) => Response.json(body);
+const ONE_SECOND = wavClip(1000);
+
 describe("ElevenLabsVoice.listen", () => {
-  it("says speech in is not built yet", async () => {
-    const { fetch } = cannedFetch();
-    const error = await failureOf(voice(fetch, recordingPlayer().player).listen());
-    expect(error.message).toMatch(/speech in is not built yet/i);
+  it("uploads the recorded clip as multipart to the speech-to-text endpoint, with the key in the header only", async () => {
+    const { fetch, calls } = cannedFetch(transcript({ text: "hello" }));
+    await listener(fetch, ONE_SECOND).listen();
+
+    expect(calls).toHaveLength(1);
+    const { url, init } = calls[0]!;
+    expect(url).toBe("https://api.elevenlabs.io/v1/speech-to-text");
+    expect(init.method).toBe("POST");
+    const headers = new Headers(init.headers);
+    expect(headers.get("xi-api-key")).toBe(KEY);
+    // fetch must set the multipart boundary itself.
+    expect(headers.has("content-type")).toBe(false);
+    const form = init.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    expect(form.get("model_id")).toBe("scribe_v2");
+    const file = form.get("file") as File;
+    expect([...new Uint8Array(await file.arrayBuffer())]).toEqual([...ONE_SECOND]);
+    expect(url).not.toContain(KEY);
+    expect([...form.values()].filter((value) => typeof value === "string").join(" ")).not.toContain(KEY);
+  });
+});
+
+describe("ElevenLabsVoice.listen: the request", () => {
+  const formOf = (call: Call) => call.init.body as FormData;
+
+  it("defaults to the speech-to-text model the API reference uses, and lets it be overridden", async () => {
+    expect(DEFAULT_STT_MODEL_ID).toBe("scribe_v2");
+    const { fetch, calls } = cannedFetch(transcript({ text: "hello" }));
+    await listener(fetch, ONE_SECOND, { sttModelId: "scribe_v3" }).listen();
+    expect(formOf(calls[0]!).get("model_id")).toBe("scribe_v3");
+  });
+
+  it("asks for no audio event tags such as (laughter), which are not the Caller's words", async () => {
+    const { fetch, calls } = cannedFetch(transcript({ text: "hello" }));
+    await listener(fetch, ONE_SECOND).listen();
+    expect(formOf(calls[0]!).get("tag_audio_events")).toBe("false");
+  });
+
+  it("labels a WAV clip as WAV, and any other clip as plain bytes", async () => {
+    const { fetch, calls } = cannedFetch(transcript({ text: "hello" }), transcript({ text: "hello" }));
+    await listener(fetch, ONE_SECOND).listen();
+    await listener(fetch, MP3).listen();
+    const [wav, other] = calls.map((call) => formOf(call).get("file") as File);
+    expect([wav!.type, wav!.name]).toEqual(["audio/wav", "clip.wav"]);
+    expect([other!.type, other!.name]).toEqual(["application/octet-stream", "clip"]);
+  });
+
+  it("uses the configured API host", async () => {
+    const { fetch, calls } = cannedFetch(transcript({ text: "hello" }));
+    await listener(fetch, ONE_SECOND, { baseUrl: "https://api.us.elevenlabs.io" }).listen();
+    expect(calls[0]!.url).toBe("https://api.us.elevenlabs.io/v1/speech-to-text");
+  });
+});
+
+describe("ElevenLabsVoice.listen: what was heard", () => {
+  it("returns the transcript, trimmed", async () => {
+    const { fetch } = cannedFetch(transcript({ language_code: "eng", text: "  Hi, I need to book an appointment.  \n", words: [] }));
+    expect(await listener(fetch, ONE_SECOND).listen()).toBe("Hi, I need to book an appointment.");
+  });
+
+  it.each([
+    ["an empty text", { text: "" }],
+    ["a blank text", { text: "   " }],
+    ["no text field", { language_code: "eng" }],
+    ["a text that is not a string", { text: null }],
+    ["a body that is not an object", null],
+  ])("returns an empty string for %s, and invents no words", async (_name, body) => {
+    const { fetch } = cannedFetch(transcript(body));
+    expect(await listener(fetch, ONE_SECOND).listen()).toBe("");
+  });
+});
+
+describe("ElevenLabsVoice.listen: clips too short to hear", () => {
+  // ElevenLabs rejects audio under 100 ms, which is what pressing Enter twice at once records.
+  it.each([
+    ["a 99 ms clip", wavClip(99)],
+    ["a 99 ms clip as ffmpeg writes it", wavClip(99, true)],
+    ["a clip with a header and no audio", wavClip(0)],
+    ["a WAV cut off before its audio", wavClip(1000).subarray(0, 36)],
+    ["an empty clip", new Uint8Array(0)],
+  ])("hears nothing in %s, and makes no request", async (_name, clip) => {
+    const { fetch, calls } = cannedFetch();
+    expect(await listener(fetch, clip).listen()).toBe("");
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    ["a clip of exactly 100 ms", wavClip(100)],
+    ["a clip of exactly 100 ms as ffmpeg writes it", wavClip(100, true)],
+    ["a clip that is not WAV, whose length cannot be told", new Uint8Array([0x49, 0x44, 0x33, 1, 2, 3, 4])],
+  ])("uploads %s", async (_name, clip) => {
+    const { fetch, calls } = cannedFetch(transcript({ text: "ok" }));
+    expect(await listener(fetch, clip).listen()).toBe("ok");
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe("ElevenLabsVoice.listen: the recorder", () => {
+  const failingRecorder = (error: Error) => async (): Promise<Uint8Array> => {
+    throw error;
+  };
+
+  it("passes a recorder's VoiceError on unchanged, and uploads nothing", async () => {
+    const { fetch, calls } = cannedFetch();
+    const missing = new VoiceError("Recording needs ffmpeg, which was not found. Install it with `brew install ffmpeg`, then try again.");
+    const error = await failureOf(listener(fetch, ONE_SECOND, { recorder: failingRecorder(missing) }).listen());
+    expect(error).toBe(missing);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("passes the Caller's interrupt on unchanged, so the adapter can end the Call", async () => {
+    const { fetch, calls } = cannedFetch();
+    const interrupt = new VoiceInterrupted();
+    const error = await failureOf(listener(fetch, ONE_SECOND, { recorder: failingRecorder(interrupt) }).listen());
+    expect(error).toBe(interrupt);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("maps any other recorder failure to a VoiceError without the key", async () => {
+    const { fetch, calls } = cannedFetch();
+    const error = await failureOf(listener(fetch, ONE_SECOND, { recorder: failingRecorder(new Error(`boom ${KEY}`)) }).listen());
+    expect(error.message).toMatch(/record/i);
+    expect(error.message).toContain("boom");
+    expect(error.message).not.toContain(KEY);
+    expect(String(error.cause ?? "")).not.toContain(KEY);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("fails with a VoiceError that says what is missing when it was given no recorder", async () => {
+    const { fetch, calls } = cannedFetch();
+    const error = await failureOf(new ElevenLabsVoice({ apiKey: KEY, voiceId: "voice/1", fetch }).listen());
+    expect(error.message).toMatch(/recorder/i);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("ElevenLabsVoice.listen: failures", () => {
+  // The same table as `speak`: both directions share one error mapping.
+  it.each([
+    [401, /key/i],
+    [403, /key/i],
+    [429, /rate limit|quota/i],
+    [500, /service/i],
+    [503, /service/i],
+    [404, /service/i],
+    [422, /service/i],
+  ])("maps HTTP %i to a VoiceError without the key", async (status, pattern) => {
+    // The body deliberately echoes the key and is not JSON: the mapping must not depend on a body shape.
+    const { fetch } = cannedFetch(new Response(`oops ${KEY}`, { status }));
+    const error = await failureOf(listener(fetch, ONE_SECOND).listen());
+
+    expect(error.message).toMatch(pattern);
+    expect(error.message).toContain(String(status));
+    expect(error.message).not.toContain(KEY);
+  });
+
+  it("maps a network failure to a VoiceError that never contains the key", async () => {
+    const { fetch } = cannedFetch(new TypeError(`fetch failed (xi-api-key: ${KEY})`));
+    const error = await failureOf(listener(fetch, ONE_SECOND).listen());
+
+    expect(error.message).toMatch(/reach|network/i);
+    expect(error.message).not.toContain(KEY);
+    expect(JSON.stringify(error)).not.toContain(KEY);
+    expect(String(error.cause ?? "")).not.toContain(KEY);
+  });
+
+  it("treats a reply that is not JSON as a service error, not as a transcript", async () => {
+    const { fetch } = cannedFetch(new Response(`<html>oops ${KEY}</html>`, { status: 200 }));
+    const error = await failureOf(listener(fetch, ONE_SECOND).listen());
+    expect(error.message).toMatch(/service error/i);
+    expect(error.message).not.toContain(KEY);
+    expect(String(error.cause ?? "")).not.toContain(KEY);
   });
 });
 
@@ -193,6 +370,19 @@ describe("ElevenLabsVoice.fromEnv", () => {
     );
     await v.speak("Hi");
     expect(JSON.parse(String(calls[0]!.init.body)).model_id).toBe(DEFAULT_MODEL_ID);
+  });
+
+  it("reads the speech-to-text model from ELEVENLABS_STT_MODEL_ID, and takes an injected recorder", async () => {
+    const { fetch, calls } = cannedFetch(transcript({ text: "hello" }), transcript({ text: "hello" }));
+    const env = { ELEVENLABS_API_KEY: KEY, ELEVENLABS_VOICE_ID: "abc" };
+    const injected = { fetch, recorder: async () => ONE_SECOND };
+
+    expect(await ElevenLabsVoice.fromEnv({ ...env, ELEVENLABS_STT_MODEL_ID: "scribe_v3" }, injected).listen()).toBe("hello");
+    await ElevenLabsVoice.fromEnv({ ...env, ELEVENLABS_STT_MODEL_ID: " " }, injected).listen();
+
+    expect(new Headers(calls[0]!.init.headers).get("xi-api-key")).toBe(KEY);
+    expect((calls[0]!.init.body as FormData).get("model_id")).toBe("scribe_v3");
+    expect((calls[1]!.init.body as FormData).get("model_id")).toBe(DEFAULT_STT_MODEL_ID);
   });
 
   it("names the missing variable, and treats a blank value as missing", () => {
