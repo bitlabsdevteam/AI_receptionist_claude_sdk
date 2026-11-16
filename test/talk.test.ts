@@ -8,7 +8,18 @@ import { VoiceError, VoiceInterrupted } from "../src/voice/voice.js";
 import type { ModelResponse } from "../src/engine/model.js";
 import { loadFlow } from "../src/flow/load.js";
 import type { Flow } from "../src/flow/schema.js";
-import { FakeClaude, GOODBYE_MESSAGE, GREETING, goodbye, reply, say, type ScriptedFailure } from "./fake-claude.js";
+import {
+  FakeClaude,
+  GOODBYE_MESSAGE,
+  GREETING,
+  failAfter,
+  flowWithBilling,
+  goodbye,
+  reply,
+  say,
+  transition,
+  type ScriptedFailure,
+} from "./fake-claude.js";
 import { FakeVoice, type Heard } from "./fake-voice.js";
 
 let flow: Flow;
@@ -32,10 +43,10 @@ function terminal(lines: string[]) {
   return { io, output: () => writes.join("") };
 }
 
-function call(script: (ModelResponse | ScriptedFailure)[], heard: Heard[] = [], speakFailures: Error[] = []) {
+function call(script: (ModelResponse | ScriptedFailure)[], heard: Heard[] = [], speakFailures: Error[] = [], callFlow: Flow = flow) {
   const client = new FakeClaude(script);
   const store = new InMemorySessionStore();
-  const engine = new FlowEngine(flow, { client, store });
+  const engine = new FlowEngine(callFlow, { client, store });
   const voice = new FakeVoice(heard, speakFailures);
   return { client, engine, voice, session: () => store.get("terminal") };
 }
@@ -220,6 +231,149 @@ describe("what reaches the model", () => {
     expect(JSON.stringify(utterances)).toContain("Typed this");
     expect(JSON.stringify(utterances)).toContain("Heard this");
     expect(client.requests).toHaveLength(3);
+  });
+});
+
+describe("the timing line", () => {
+  /**
+   * A Call on a fake clock, which only moves when a step of the Turn is made to take time: the Caller speaking
+   * (`record`), the transcription, each model call and the speaking of a reply.
+   */
+  function timedCall(
+    script: (ModelResponse | ScriptedFailure)[],
+    heard: Heard[],
+    takes: { record?: number; transcribe?: number; model?: number; speak?: number },
+    speakFailures: Error[] = [],
+    callFlow: Flow = flow,
+  ) {
+    const made = call(script, heard, speakFailures, callFlow);
+    let now = 5000;
+    made.voice.onStep = (step) => void (now += takes[step] ?? 0);
+    const createMessage = made.client.createMessage.bind(made.client);
+    made.client.createMessage = async (request, onTextDelta) => {
+      const response = await createMessage(request, onTextDelta);
+      now += takes.model ?? 0;
+      return response;
+    };
+    return { ...made, clock: () => now };
+  }
+
+  it("follows a spoken Turn's reply, with how long recording, transcribing, the model and speaking took", async () => {
+    const { engine, voice, clock } = timedCall([say(GREETING), say("We are Acme Co.")], ["Who are you?"], {
+      record: 1200,
+      transcribe: 300,
+      model: 450,
+      speak: 700,
+    });
+    const { io, output } = terminal([""]);
+
+    await runTalk(engine, voice, io, { clock });
+
+    expect(output()).toBe(
+      `Receptionist: ${GREETING}\n` +
+        "You (Enter to speak, or type): \n" +
+        "You: Who are you?\n" +
+        "Receptionist: We are Acme Co.\n" +
+        "(Timing: record 1200 ms, transcribe 300 ms, model 450 ms, speak 700 ms)\n" +
+        "You (Enter to speak, or type): ",
+    );
+  });
+
+  it("has no record or transcribe figure for a typed Turn", async () => {
+    const { engine, voice, clock } = timedCall([say(GREETING), say("We are Acme Co.")], [], { model: 450, speak: 700 });
+    const { io, output } = terminal(["Who are you?"]);
+
+    await runTalk(engine, voice, io, { clock });
+
+    expect(output()).toContain("Receptionist: We are Acme Co.\n(Timing: model 450 ms, speak 700 ms)\nYou (Enter");
+  });
+
+  it("is printed once per Turn: not for the greeting, an empty transcript, a failed listen or a failed Turn", async () => {
+    const { engine, voice, clock } = timedCall(
+      [say(GREETING), failAfter("We are", new Error("connection lost")), say("We are Acme Co."), say("Nine to five.")],
+      ["", new VoiceError("microphone busy"), "Who are you?", "Who are you?", "And your hours?"],
+      { record: 1000, transcribe: 200, model: 400, speak: 600 },
+    );
+    const { io, output } = terminal(["", "", "", "", ""]);
+
+    await runTalk(engine, voice, io, { clock });
+
+    expect(output().match(/\(Timing: /g)).toHaveLength(2);
+    expect(output().match(/\(Timing: record 1000 ms, transcribe 200 ms, model 400 ms, speak 600 ms\)\n/g)).toHaveLength(2);
+    expect(output()).toContain(`Receptionist: ${GREETING}\nYou (Enter`);
+  });
+
+  it("follows the End state's message on the Turn that ends the Call", async () => {
+    const { engine, voice, clock } = timedCall([say(GREETING), goodbye()], [], { model: 450, speak: 700 });
+    const { io, output } = terminal(["Goodbye."]);
+
+    const result = await runTalk(engine, voice, io, { clock });
+
+    expect(output().endsWith(`Receptionist: ${GOODBYE_MESSAGE}\n(Timing: model 450 ms, speak 700 ms)\n`)).toBe(true);
+    expect(result).toBe("ended");
+  });
+
+  it("counts every model call of a Turn that takes an Edge to another Node", async () => {
+    const { engine, voice, clock } = timedCall(
+      [say(GREETING), transition("e_start_billing"), say("Let me look at that invoice.")],
+      [],
+      { model: 450, speak: 700 },
+      [],
+      flowWithBilling(flow),
+    );
+    const { io, output } = terminal(["I have a question about my invoice."]);
+
+    await runTalk(engine, voice, io, { clock });
+
+    expect(output()).toContain("(Timing: model 900 ms, speak 700 ms)\n");
+  });
+
+  it("still reports the Turn when the reply could not be spoken, with the time spent trying", async () => {
+    const { engine, voice, clock } = timedCall(
+      [say(GREETING), say("We are Acme Co.")],
+      [],
+      { model: 450, speak: 80 },
+      [new VoiceError("x"), new VoiceError("no audio device")],
+    );
+    const { io, output } = terminal(["Who are you?"]);
+
+    await runTalk(engine, voice, io, { clock });
+
+    expect(output()).toContain("(Could not speak: no audio device)\n(Timing: model 450 ms, speak 80 ms)\n");
+  });
+
+  it("rounds to whole milliseconds", async () => {
+    const { engine, voice, clock } = timedCall([say(GREETING), say("We are Acme Co.")], [], { model: 449.6, speak: 700.4 });
+    const { io, output } = terminal(["Who are you?"]);
+
+    await runTalk(engine, voice, io, { clock });
+
+    expect(output()).toContain("(Timing: model 450 ms, speak 700 ms)\n");
+  });
+
+  it("gives one figure for listening when the Voice does not say when the recording was in hand", async () => {
+    const { engine, voice, clock } = timedCall([say(GREETING), say("We are Acme Co.")], ["Who are you?"], {
+      record: 1200,
+      transcribe: 300,
+      model: 450,
+      speak: 700,
+    });
+    const listen = voice.listen.bind(voice);
+    voice.listen = () => listen();
+    const { io, output } = terminal([""]);
+
+    await runTalk(engine, voice, io, { clock });
+
+    expect(output()).toContain("(Timing: listen 1500 ms, model 450 ms, speak 700 ms)\n");
+  });
+
+  it("is left out when the Call has no clock", async () => {
+    const { engine, voice } = timedCall([say(GREETING), say("We are Acme Co.")], [], { model: 450, speak: 700 });
+    const { io, output } = terminal(["Who are you?"]);
+
+    await runTalk(engine, voice, io);
+
+    expect(output()).not.toContain("Timing");
   });
 });
 

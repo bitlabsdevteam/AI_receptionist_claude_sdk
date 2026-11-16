@@ -76,7 +76,7 @@ export class ElevenLabsVoice implements Voice {
     }
   }
 
-  async listen(): Promise<string> {
+  async listen(onRecorded?: () => void): Promise<string> {
     const { recorder } = this.#config;
     if (!recorder) throw new VoiceError("Speech in needs a recorder, and this Voice was given none.");
     let clip: Uint8Array;
@@ -87,6 +87,7 @@ export class ElevenLabsVoice implements Voice {
       if (e instanceof VoiceError) throw e;
       throw new VoiceError(`Could not record: ${this.#describe(e)}`, { cause: this.#safeCause(e) });
     }
+    onRecorded?.();
     return this.#transcribe(clip);
   }
 

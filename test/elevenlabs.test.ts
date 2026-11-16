@@ -196,6 +196,35 @@ describe("ElevenLabsVoice.listen", () => {
     expect(url).not.toContain(KEY);
     expect([...form.values()].filter((value) => typeof value === "string").join(" ")).not.toContain(KEY);
   });
+
+  it("says when the recording is in hand: after the recorder returns and before the upload", async () => {
+    const events: string[] = [];
+    const { fetch } = cannedFetch(transcript({ text: "hello" }));
+    const uploading: typeof fetch = (url, init) => {
+      events.push("upload");
+      return fetch(url, init);
+    };
+    const recorder = async () => {
+      events.push("record");
+      return ONE_SECOND;
+    };
+
+    await voice(uploading, recordingPlayer().player, { recorder }).listen(() => void events.push("recorded"));
+
+    expect(events).toEqual(["record", "recorded", "upload"]);
+  });
+
+  it("does not say the recording is in hand when the recorder failed", async () => {
+    const { fetch } = cannedFetch();
+    let recorded = false;
+    const recorder = async (): Promise<Uint8Array> => {
+      throw new VoiceError("microphone busy");
+    };
+
+    await failureOf(voice(fetch, recordingPlayer().player, { recorder }).listen(() => void (recorded = true)));
+
+    expect(recorded).toBe(false);
+  });
 });
 
 describe("ElevenLabsVoice.listen: the request", () => {
