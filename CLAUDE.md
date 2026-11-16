@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-An AI voice receptionist: a conversation-flow engine on the Anthropic Messages API (`@anthropic-ai/sdk`), in TypeScript on Node 24. A Flow, defined as data, says how a Call can unfold. The engine runs one Node at a time, answers each Caller Turn as the Receptionist, and follows an Edge or ends the Call in an End state. Today the only channel is a terminal chat (`npm run chat`), and the Flow is a single `start` Node with a `goodbye` End state. The spec is `PRD.md` and the vocabulary is `GLOSSARY.md` (Call, Flow, Node, Edge, End state, Turn, Receptionist, Caller). Use those terms in code, comments and docs. `Session` is only the code-level name for a Call's state.
+An AI voice receptionist, built as a **harness** around Claude: a conversation-flow engine on the Anthropic Messages API (`@anthropic-ai/sdk`), in TypeScript on Node 24. A Flow, defined as data, says how a Call can unfold. The engine runs one Node at a time, answers each Caller Turn as the Receptionist, and follows an Edge or ends the Call in an End state. The governing rule is **the model proposes, code decides**: Claude writes the words and suggests Edges, and code owns every fact that matters (see Harness invariants below). The target channel is voice over Telnyx. Today the only channel is a terminal chat (`npm run chat`), and the Flow is a single `start` Node with a `goodbye` End state. The spec is `PRD.md` (read section 8 for the harness), `TDD.md` is the technical design for the voice agent, and the vocabulary is `GLOSSARY.md` (Call, Flow, Node, Edge, End state, Turn, Receptionist, Caller, Harness, Guard, Trace, Scenario, Simulated Caller). Use those terms in code, comments and docs. `Session` is only the code-level name for a Call's state.
 
 ## Commands
 
@@ -53,6 +53,19 @@ The Flow is data and the engine interprets it. Changing how a Call behaves usual
 
 `ReplyStream` (`src/engine/reply-stream.ts`) has `text(delta)` and `discard()`. The rule every stream can rely on: when a Turn finishes, what the stream was shown is exactly the Turn's reply, End state message and safe lines included. If the reply changed after text was shown (a refusal, or a failed request), `discard()` is called first, everything shown is void, and the true reply follows from nothing. `ReplyWriter` enforces this, so engine code never writes to a stream directly. Keep it intact when changing the engine or adding an adapter.
 
+## Harness invariants
+
+These hold today and are each covered by a test (I7 is asserted for sampling parameters, thinking, tool choice and effort; nothing yet asserts the absence of prefill). Preserve them when you change the engine, the model client or an adapter. They are numbered as in `PRD.md` section 8.1.
+
+- **I2** An Edge is applied by the engine, never by the model, and never from a refused response.
+- **I3** An empty reply is never spoken. It becomes a safe line (an End state's message counts as the reply).
+- **I4** Refused text is never stored as the Receptionist's words, and a refused Turn is never replayed to the model. The history sent to the model never contains an empty message.
+- **I5** A Turn is idempotent on `turnId`, and Turns on one Call run one at a time.
+- **I6** What a stream was shown equals the Turn's final reply, or `discard()` is called first (see Streaming rule).
+- **I7** Requests never carry `temperature`, `top_p` or `top_k`, never disable thinking, never use prefill or forced `tool_choice`, and always set effort.
+
+When you add behaviour, put the rule in code and add a test that fails if the model tries to break it. Do not rely on the prompt alone. The rest of the planned harness (I1, I8, I9 identity and tool Guards, I10 PII redaction in Traces) is in the PRD and is not built: do not describe it as existing.
+
 ## Testing
 
 Tests are vitest files in `test/` and run offline. `test/fake-claude.ts` is a scripted `ModelClient`: build it with the ordered responses the model would give (`say("...")`, `reply([...blocks], stopReason)`, `failAfter(text, error)`, plus the shared `transition(edgeId, text?)`, `goodbye(text?)`, `flowWithBilling(flow)`, `GREETING` and `GOODBYE_MESSAGE`; build tool names with `transitionToolName`), inject it with `new FlowEngine(flow, { client })`, then assert on `TurnResult`, the session in the store, streamed text and the recorded `requests` (system prompt, tools, `model`, `effort`, `maxTokens`). Requests are cloned when recorded, so later mutation by the engine does not leak into them. It streams word by word like the real client. `test/sse.ts` builds canned HTTP streams, so `anthropic-client.test.ts` exercises the real SDK with no network. Any new Flow behaviour should be testable this way.
@@ -71,7 +84,15 @@ Tests are vitest files in `test/` and run offline. `test/fake-claude.ts` is a sc
 
 ## Not built yet
 
-From PRD section 15 (Phase 2): `speak` and `tool` Node types, `expression` Edges, post-verification business Nodes (account lookup, transfer), the Telnyx TeXML voice adapter with a status callback for cleanup, an external session store, webhook signature verification, AWS deployment. Also not built, though the PRD's Phase 1 plans them: the `verify` Node and SQLite, a tool registry and business tools (a Node's `tools` list must be empty today, and `runNode` ignores business tool calls), the HTTP adapter, the `max_tool_rounds` Node setting (the schema accepts it, but nothing reads it until business tools exist), the `Action` type in `turn.ts` (reserved for transfer and hang-up, and `TurnResult.actions` is always empty), an OpenRouter client (the schema accepts `openrouter/...` models but `AnthropicModelClient` throws on them), and `MAX_HOPS` / `SESSION_TTL_SECS` configuration.
+The roadmap and milestones are in `PRD.md` section 13. None of the harness layers below exist yet, so do not write code or docs as if they did:
+
+- **Traces** (PRD 8.4): nothing logs today, and `ModelResponse` carries no token usage or timings.
+- **Guards as named, Flow-referenced rules** (PRD 8.3): only the built-in Edge and reply rules in "Harness invariants" exist. There are no identity, tool or data Guards.
+- **Evaluation harness** (PRD 8.5): only tier 1 (offline scripted tests with `FakeClaude`) exists. There are no Scenarios, Simulated Caller, judge, Trace replay or regression gate.
+- **Prompt caching** (PRD 8.2): no `cache_control` is sent.
+- **Voice** (PRD 8.6): no HTTP server and no Telnyx adapter. The first adapter choice is an open question in the PRD.
+
+Also from the PRD (later): `speak` and `tool` Node types, `expression` Edges, post-verification business Nodes (account lookup, transfer), webhook signature verification, an external session store, AWS deployment. Also not built, though the PRD plans them next: the `verify` Node and SQLite, a tool registry and business tools (a Node's `tools` list must be empty today, and `runNode` ignores business tool calls), the HTTP adapter, the `max_tool_rounds` Node setting (the schema accepts it, but nothing reads it until business tools exist), the `Action` type in `turn.ts` (reserved for transfer and hang-up, and `TurnResult.actions` is always empty), an OpenRouter client (the schema accepts `openrouter/...` models but `AnthropicModelClient` throws on them), and `MAX_HOPS` / `SESSION_TTL_SECS` configuration.
 
 Known gaps:
 

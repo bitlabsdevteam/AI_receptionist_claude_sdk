@@ -35,3 +35,29 @@ _Avoid_: Outcome, terminal node, exit
 **Turn**:
 One Caller utterance and the Receptionist's reply to it.
 _Avoid_: Message, exchange
+
+**Voice**:
+How the Receptionist is heard and the Caller is understood on a spoken Call: speech in and speech out. Typed chat has no Voice.
+_Avoid_: TTS engine, speech tool, audio layer
+
+## Harness
+
+**Harness**:
+Everything around the model that makes it dependable on a Call: what it is shown, what it may do, the rules that always hold, and the means of measuring it.
+_Avoid_: Wrapper, framework, orchestrator
+
+**Guard**:
+A rule that always holds whatever the model says, such as "a Caller is never verified unless the identity check passed".
+_Avoid_: Guardrail, validator, filter
+
+**Trace**:
+The record of how the Harness handled one Turn: what happened, how long it took, and which Guards allowed or rejected what.
+_Avoid_: Log, audit trail
+
+**Scenario**:
+A scripted situation a Caller might create, together with what must be true when the Call ends.
+_Avoid_: Test case, script
+
+**Simulated Caller**:
+A model playing the Caller in a Scenario, knowing only what a real Caller would know.
+_Avoid_: Fake user, test bot
