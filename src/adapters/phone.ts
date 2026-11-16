@@ -2,6 +2,14 @@ import type { FlowEngine } from "../engine/engine.js";
 import type { TurnResult } from "../engine/turn.js";
 import { messageOf } from "./chat.js";
 
+/**
+ * The fixed lines. They are the adapter's own words: they are never sent to the model, never stored in the Call's
+ * transcript and never spend a turn id.
+ */
+export const AGAIN_LINE = "Sorry, could you say that again?";
+export const TROUBLE_LINE = "Sorry, we're having technical trouble. Please call back later.";
+export const TIME_LIMIT_LINE = "Sorry, I have to end this call now. Please call back if you need anything else.";
+
 /** What the rules of a phone Call may ask of the phone line. Whatever carries the Call implements it. */
 export interface PhoneLine {
   /**
@@ -14,11 +22,20 @@ export interface PhoneLine {
    * and hangs up. It returns at once. The line reports that the words were spoken by calling `closingSpoken`.
    */
   closeWith(callId: string, text: string): void;
+  /** Hangs up at once, without any words. It is asked only when a closing did not finish, so it returns at once too. */
+  hangUp(callId: string): void;
 }
+
+/** How long a Call may last, from the moment the call arrived. */
+export const TIME_LIMIT_MS = 10 * 60 * 1000;
+/** How long a closing may take, from the request to close with words, before the Call is hung up anyway. */
+export const CLOSING_STALL_MS = 30_000;
 
 export interface PhoneOptions {
   /** Reads the time in ms, for the timing line that follows each Turn. */
   clock?: () => number;
+  /** Runs `run` once, `ms` from now, and returns the function that cancels it. For the time limit and a stalled closing. */
+  after?: (ms: number, run: () => void) => () => void;
 }
 
 /** What is kept for a Call while its Caller is on the line. */
@@ -31,6 +48,12 @@ interface PhoneCall {
   turns: number;
   /** Whether the Call is being closed from our side. Nothing more is said on it and no Turn starts. */
   closing: boolean;
+  /** How many Turns have failed in a row. A Turn that succeeds sets it back to 0. */
+  failures: number;
+  /** Cancels the time limit. */
+  cancelLimit: () => void;
+  /** Cancels the wait for a closing to finish, while there is one. */
+  cancelStall: () => void;
   /**
    * The Call's work so far, one piece after another: the greeting, then each Turn. Whatever the Caller says next is
    * added to its end, so a Turn starts only when the greeting and every earlier Turn have been said. It never rejects.
@@ -51,6 +74,7 @@ export class PhoneCalls {
   readonly #line: PhoneLine;
   readonly #write: (text: string) => void;
   readonly #now: () => number;
+  readonly #after: (ms: number, run: () => void) => () => void;
   /** The Calls whose Callers are on the line, by id. */
   readonly #calls = new Map<string, PhoneCall>();
   /** The ids of the Calls that are over. Whatever the line still reports for one of them is ignored. */
@@ -62,6 +86,7 @@ export class PhoneCalls {
     this.#line = line;
     this.#write = write;
     this.#now = options.clock ?? (() => performance.now());
+    this.#after = options.after ?? inRealTime;
   }
 
   /**
@@ -74,8 +99,19 @@ export class PhoneCalls {
     let connect!: () => void;
     const connected = new Promise<void>((resolve) => void (connect = resolve));
     const number = callerNumber?.trim();
-    const call: PhoneCall = { id: callId, connected, connect, turns: 0, closing: false, work: Promise.resolve() };
+    const call: PhoneCall = {
+      id: callId,
+      connected,
+      connect,
+      turns: 0,
+      closing: false,
+      failures: 0,
+      cancelLimit: () => {},
+      cancelStall: () => {},
+      work: Promise.resolve(),
+    };
     this.#calls.set(callId, call);
+    call.cancelLimit = this.#after(TIME_LIMIT_MS, () => this.#close(call, TIME_LIMIT_LINE));
     this.#write(`Call arrived from ${shownNumber(number)}.\n`);
     call.work = this.#greet(call, this.#engine.start(callId, number ? { callerNumber: number } : {}));
   }
@@ -100,7 +136,28 @@ export class PhoneCalls {
    * keeps the whole reply although the Caller heard part of it, and a Turn in flight still finishes and is said.
    */
   callerInterrupted(callId: string): void {
-    if (this.#calls.has(callId)) this.#write("(The Caller interrupted.)\n");
+    const call = this.#calls.get(callId);
+    if (call && !call.closing) this.#write("(The Caller interrupted.)\n");
+  }
+
+  /**
+   * The line's connection to us was lost while the Caller may still be there, so nothing more can be heard or said the
+   * normal way. The Call is closed with the trouble line. While a Call is already being closed the loss is expected
+   * and means nothing.
+   */
+  connectionLost(callId: string): void {
+    const call = this.#calls.get(callId);
+    if (!call || call.closing) return;
+    this.#write("(The connection to the line was lost.)\n");
+    this.#close(call, TROUBLE_LINE);
+  }
+
+  /** The line has spoken the words of a closing and hung up, so the Call is over. */
+  closingSpoken(callId: string): void {
+    const call = this.#calls.get(callId);
+    if (!call?.closing) return;
+    this.#write("The Call ended.\n");
+    this.#forget(call);
   }
 
   /**
@@ -121,7 +178,7 @@ export class PhoneCalls {
       [greeting] = await Promise.all([started, call.connected]);
     } catch (error) {
       this.#write(`Could not open the Call: ${messageOf(error)}\n`);
-      this.#forget(call);
+      this.#close(call, TROUBLE_LINE);
       return;
     }
     if (this.#isOver(call)) return;
@@ -142,9 +199,15 @@ export class PhoneCalls {
       result = await this.#engine.handleUser(call.id, utterance, `${call.id}:${turn}`);
     } catch (error) {
       this.#write(`(The Receptionist could not answer: ${messageOf(error)})\n`);
+      if (this.#isOver(call)) return;
+      call.failures++;
+      // One failed Turn is asked again. A second in a row is more than a slip, so the Call is closed.
+      if (call.failures >= 2) this.#close(call, TROUBLE_LINE);
+      else this.#say(call, AGAIN_LINE);
       return;
     }
     if (this.#isOver(call)) return;
+    call.failures = 0;
     call.turns = turn;
     // An ending Turn's reply, the End state's message included, is the Call's last words and is not said the normal way.
     if (result.ended) {
@@ -178,8 +241,30 @@ export class PhoneCalls {
   #close(call: PhoneCall, text: string): void {
     if (this.#isOver(call)) return;
     call.closing = true;
+    call.cancelLimit();
     this.#write(`Receptionist: ${text}\n`);
-    this.#line.closeWith(call.id, text);
+    try {
+      this.#line.closeWith(call.id, text);
+    } catch (error) {
+      this.#write(`(Could not close the Call: ${messageOf(error)})\n`);
+      this.#hangUp(call);
+      return;
+    }
+    // A line that never reports the words spoken must not keep the Caller on the phone for ever.
+    call.cancelStall = this.#after(CLOSING_STALL_MS, () => {
+      this.#write("(The closing was not reported as spoken, hanging up.)\n");
+      this.#hangUp(call);
+    });
+  }
+
+  /** Hangs up now, without waiting for words, and ends the Call. */
+  #hangUp(call: PhoneCall): void {
+    this.#forget(call);
+    try {
+      this.#line.hangUp(call.id);
+    } catch (error) {
+      this.#write(`(Could not hang up: ${messageOf(error)})\n`);
+    }
   }
 
   /** Whether nothing more may be said on the Call: its Caller hung up, it could not be opened, or it is being closed. */
@@ -192,6 +277,8 @@ export class PhoneCalls {
    * its arrival opens nothing. A greeting still waiting for the line to connect is let go, to be said to nobody.
    */
   #forget(call: PhoneCall): void {
+    call.cancelLimit();
+    call.cancelStall();
     this.#calls.delete(call.id);
     this.#over.add(call.id);
     call.connect();
@@ -206,4 +293,11 @@ function shownNumber(number: string | undefined): string {
   if (!number) return "a withheld number";
   const digits = number.replace(/\D/g, "");
   return digits.length > 4 ? `a number ending ${digits.slice(-4)}` : "a short number";
+}
+
+/** Runs `run` after `ms` of real time. The timer does not keep the program alive. */
+function inRealTime(ms: number, run: () => void): () => void {
+  const timer = setTimeout(run, ms);
+  timer.unref();
+  return () => clearTimeout(timer);
 }
