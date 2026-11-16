@@ -44,6 +44,14 @@ _Avoid_: Message, exchange
 How the Receptionist is heard and the Caller is understood on a spoken Call: speech in and speech out. Typed chat has no Voice.
 _Avoid_: TTS engine, speech tool, audio layer
 
+**Relay connection**:
+The WebSocket that Telnyx opens to the receptionist's server for one phone Call. The Caller's words arrive on it as text and the Receptionist's replies go back on it. It belongs to the Call only once its first message names that Call.
+_Avoid_: Stream, socket, media stream
+
+**Relay token**:
+The single-use secret in the address of a Relay connection. It is issued for one Call, valid for 30 seconds, and says which Call a connection may ask to join.
+_Avoid_: Session key, auth token, API key
+
 ## Harness
 
 **Harness**:
