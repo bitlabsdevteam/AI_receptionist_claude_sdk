@@ -247,7 +247,7 @@ describe("what reaches the model", () => {
 
 describe("the timing line", () => {
   /**
-   * A Call on a fake clock, which only moves when a step of the Turn is made to take time: the Caller speaking
+   * A Call on a fake clock, which only moves when a phase of the Turn is made to take time: the Caller speaking
    * (`record`), the transcription, each model call and the speaking of a reply.
    */
   function timedCall(
@@ -259,7 +259,7 @@ describe("the timing line", () => {
   ) {
     const made = call(script, heard, speakFailures, callFlow);
     let now = 5000;
-    made.voice.onStep = (step) => void (now += takes[step] ?? 0);
+    made.voice.onPhase = (phase) => void (now += takes[phase] ?? 0);
     const createMessage = made.client.createMessage.bind(made.client);
     made.client.createMessage = async (request, onTextDelta) => {
       const response = await createMessage(request, onTextDelta);

@@ -4,19 +4,19 @@ import type { Voice } from "../src/voice/voice.js";
 export type Heard = string | Error;
 
 /** A piece of the Voice's work: the Caller speaking, the transcription of it, and the speaking of a reply. */
-export type VoiceStep = "record" | "transcribe" | "speak";
+export type VoicePhase = "record" | "transcribe" | "speak";
 
 /**
  * Scripted stand-in for a Voice. `listen()` returns the scripted transcripts and failures in order, and throws once
  * the script runs out (so a test that listens more than it meant to fails loudly). Everything handed to `speak()` is
  * recorded in `spoken`. `speakFailures` makes the first calls to `speak()` throw, one error each, instead of speaking.
- * `onStep` is called as each step of the work is done, so a test with a fake clock can make the step take time.
+ * `onPhase` is called as each phase of the work is done, so a test with a fake clock can make the phase take time.
  */
 export class FakeVoice implements Voice {
   readonly spoken: string[] = [];
   /** How many times `listen()` was called. */
   listens = 0;
-  onStep: (step: VoiceStep) => void = () => {};
+  onPhase: (phase: VoicePhase) => void = () => {};
   readonly #heard: Heard[];
   readonly #speakFailures: Error[];
 
@@ -26,7 +26,7 @@ export class FakeVoice implements Voice {
   }
 
   async speak(text: string): Promise<void> {
-    this.onStep("speak");
+    this.onPhase("speak");
     const failure = this.#speakFailures.shift();
     if (failure) throw failure;
     this.spoken.push(text);
@@ -37,9 +37,9 @@ export class FakeVoice implements Voice {
     const next = this.#heard.shift();
     if (next === undefined) throw new Error("FakeVoice has nothing left to hear");
     if (next instanceof Error) throw next;
-    this.onStep("record");
+    this.onPhase("record");
     onRecorded?.();
-    this.onStep("transcribe");
+    this.onPhase("transcribe");
     return next;
   }
 }

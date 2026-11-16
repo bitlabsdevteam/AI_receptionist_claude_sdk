@@ -8,7 +8,7 @@ export interface TalkOptions {
   label?: string;
   callId?: string;
   /**
-   * Reads the time in ms. When given, a timing line follows each Turn, saying how long each step took. It is plain
+   * Reads the time in ms. When given, a timing line follows each Turn, saying how long each phase took. It is plain
    * output for whoever is at the terminal, not a Trace.
    */
   clock?: () => number;
@@ -55,7 +55,7 @@ export async function runTalk(engine: FlowEngine, voice: Voice, io: ChatIO, opti
     const typed = (await io.ask("You (Enter to speak, or type): "))?.trim();
     if (typed === undefined) return "input-closed";
     let line = typed;
-    const steps: Step[] = [];
+    const timings: Timing[] = [];
     if (typed === "") {
       try {
         const started = now();
@@ -63,9 +63,9 @@ export async function runTalk(engine: FlowEngine, voice: Voice, io: ChatIO, opti
         line = (await voice.listen(() => void (recorded = now()))).trim();
         const heard = now();
         // `record` is the Caller speaking plus the recorder starting and stopping. A Voice that does not say when the
-        // recording was in hand gets one figure for the two steps, not a made-up split.
-        if (recorded === undefined) steps.push(["listen", heard - started]);
-        else steps.push(["record", recorded - started], ["transcribe", heard - recorded]);
+        // recording was in hand gets one figure for the two phases, not a made-up split.
+        if (recorded === undefined) timings.push(["listen", heard - started]);
+        else timings.push(["record", recorded - started], ["transcribe", heard - recorded]);
       } catch (error) {
         if (error instanceof VoiceInterrupted) return "interrupted";
         io.write(`(Could not hear you: ${reasonOf(error)}. Please try again.)\n`);
@@ -86,8 +86,8 @@ export async function runTalk(engine: FlowEngine, voice: Voice, io: ChatIO, opti
       reply.end();
       const answered = now();
       await speak(result.reply);
-      steps.push(["model", answered - asked], ["speak", now() - answered]);
-      if (clock) io.write(`${timingLine(steps)}\n`);
+      timings.push(["model", answered - asked], ["speak", now() - answered]);
+      if (clock) io.write(`${timingLine(timings)}\n`);
       if (result.ended) return "ended";
     } catch (error) {
       reply.end();
@@ -97,16 +97,19 @@ export async function runTalk(engine: FlowEngine, voice: Voice, io: ChatIO, opti
   }
 }
 
-/** One step of a Turn and how long it took, in ms. */
-type Step = [name: string, ms: number];
+/** What a Turn's time goes on. `listen` is `record` and `transcribe` as one, for a Voice that does not tell them apart. */
+type Phase = "listen" | "record" | "transcribe" | "model" | "speak";
+
+/** One phase of a Turn and how long it took, in ms. */
+type Timing = [phase: Phase, ms: number];
 
 /**
- * How long each step of a Turn took, such as `(Timing: record 1200 ms, transcribe 300 ms, model 450 ms, speak 700 ms)`.
+ * How long each phase of a Turn took, such as `(Timing: record 1200 ms, transcribe 300 ms, model 450 ms, speak 700 ms)`.
  * `model` is the whole Turn in the engine, every hop included. `speak` runs until the reply has been said, so it
  * grows with the length of the reply. A typed Turn has no `record` or `transcribe`.
  */
-function timingLine(steps: Step[]): string {
-  return `(Timing: ${steps.map(([name, ms]) => `${name} ${Math.round(ms)} ms`).join(", ")})`;
+function timingLine(timings: Timing[]): string {
+  return `(Timing: ${timings.map(([phase, ms]) => `${phase} ${Math.round(ms)} ms`).join(", ")})`;
 }
 
 /** The error's message without a closing full stop, to go in the middle of a sentence. */
