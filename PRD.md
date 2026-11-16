@@ -456,7 +456,7 @@ receptionist/
 │   ├── engine/             # engine.ts, run-node.ts, model.ts, anthropic-client.ts,
 │   │                       # reply-stream.ts, session.ts, templating.ts, turn.ts
 │   ├── voice/              # voice.ts (the Voice interface), elevenlabs.ts,
-│   │                       # player.ts (afplay), recorder.ts (ffmpeg)
+│   │                       # player.ts (afplay), recorder.ts (ffmpeg), wav.ts
 │   └── adapters/           # chat.ts, cli.ts, terminal-reply.ts (terminal chat);
 │                           # talk.ts, talk-terminal.ts, talk-cli.ts, line-queue.ts (spoken Call)
 └── test/                   # vitest, offline; fake-claude.ts, fake-voice.ts, fake-ffmpeg.ts, sse.ts, wav.ts,
