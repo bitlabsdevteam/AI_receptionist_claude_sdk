@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { parseEnv } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigError, loadDotEnv, requireApiKey, requireTalkConfig } from "../src/config.js";
 
@@ -71,6 +72,27 @@ describe("requireTalkConfig", () => {
 
     expect(message).not.toContain("sk_SECRET");
     expect(message).not.toContain("sk-ant-real");
+  });
+});
+
+describe(".env.example", () => {
+  const example = parseEnv(readFileSync(".env.example", "utf8"));
+
+  it("lists every variable a spoken Call reads, with no ElevenLabs value filled in", () => {
+    expect(example).toMatchObject({
+      ELEVENLABS_API_KEY: "",
+      ELEVENLABS_VOICE_ID: "",
+      ELEVENLABS_MODEL_ID: "",
+      ELEVENLABS_STT_MODEL_ID: "",
+      ELEVENLABS_BASE_URL: "",
+    });
+  });
+
+  it("counts as not configured when copied to .env unedited", () => {
+    expect(() => requireApiKey(example)).toThrow(ConfigError);
+    expect(() => requireTalkConfig(example)).toThrow(
+      /ANTHROPIC_API_KEY is not set.*ELEVENLABS_API_KEY is not set.*ELEVENLABS_VOICE_ID is not set/s,
+    );
   });
 });
 
