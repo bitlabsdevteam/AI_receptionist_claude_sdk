@@ -1,7 +1,8 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordClip, type Spawner } from "../src/voice/recorder.js";
 import { VoiceError, VoiceInterrupted } from "../src/voice/voice.js";
 import { fakeFfmpeg } from "./fake-ffmpeg.js";
@@ -127,6 +128,43 @@ describe("recordClip", () => {
     expect(await leftovers()).toEqual([]);
   });
 
+  it("kills an ffmpeg that ignores the request to stop, fails with a VoiceError instead of hanging, and cleans up", { timeout: 2000 }, async () => {
+    const ffmpeg = fakeFfmpeg({ clip: CLIP, ignoreStop: true });
+    const error = await recordClip({ spawn: ffmpeg.spawn, tempDir: parent, stopGraceMs: 20, waitForEnter: async () => {} }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(error).toBeInstanceOf(VoiceError);
+    expect((error as Error).message).toMatch(/did not stop/);
+    expect(ffmpeg.events).toEqual(["start", "stop", "kill"]);
+    expect(await leftovers()).toEqual([]);
+  });
+
+  it("kills an ffmpeg that ignores the request to stop when the Caller interrupts, and still reports the interrupt", { timeout: 2000 }, async () => {
+    const ffmpeg = fakeFfmpeg({ clip: CLIP, ignoreStop: true });
+    const error = await recordClip({
+      spawn: ffmpeg.spawn,
+      tempDir: parent,
+      stopGraceMs: 20,
+      waitForEnter: async () => {
+        throw new VoiceInterrupted();
+      },
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(VoiceInterrupted);
+    expect(ffmpeg.events).toEqual(["start", "stop", "kill"]);
+    expect(await leftovers()).toEqual([]);
+  });
+
+  it("does not kill an ffmpeg that stops when asked", async () => {
+    const ffmpeg = fakeFfmpeg({ clip: CLIP });
+    await recordClip({ spawn: ffmpeg.spawn, tempDir: parent, stopGraceMs: 20, waitForEnter: async () => {} });
+    // Longer than the grace, so a timer left running would show up as a kill.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(ffmpeg.events).toEqual(["start", "stop"]);
+  });
+
   it("stops ffmpeg, cleans up and rethrows when the Caller interrupts", async () => {
     const ffmpeg = fakeFfmpeg({ clip: CLIP });
     const error = await recordClip({
@@ -139,5 +177,37 @@ describe("recordClip", () => {
     expect(error).toBeInstanceOf(VoiceInterrupted);
     expect(ffmpeg.events).toEqual(["start", "stop"]);
     expect(await leftovers()).toEqual([]);
+  });
+});
+
+describe("recordClip with its own spawner", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("kills a recorder process that ignores the request to stop, and leaves no process and no file behind", async () => {
+    // The only thing on the PATH is a stand-in for ffmpeg, so the real one cannot be started and no microphone is
+    // opened. It notes its process id, then carries on whatever it is sent.
+    const bin = join(parent, "bin");
+    const work = join(parent, "work");
+    const pidFile = join(parent, "pid");
+    await mkdir(bin);
+    await mkdir(work);
+    await writeFile(join(bin, "ffmpeg"), `#!/bin/sh\necho $$ > "${pidFile}"\nexec /bin/sleep 30\n`, { mode: 0o755 });
+    vi.stubEnv("PATH", bin);
+
+    const error = await recordClip({
+      tempDir: work,
+      stopGraceMs: 200,
+      waitForEnter: () => vi.waitFor(() => expect(existsSync(pidFile)).toBe(true)),
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(VoiceError);
+    expect((error as Error).message).toMatch(/did not stop/);
+    const pid = Number(await readFile(pidFile, "utf8"));
+    expect(pid).toBeGreaterThan(0);
+    // Signal 0 only asks whether the process exists.
+    expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);
+    expect(await readdir(work)).toEqual([]);
   });
 });
