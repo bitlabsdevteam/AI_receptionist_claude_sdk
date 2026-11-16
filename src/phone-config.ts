@@ -1,5 +1,5 @@
 import { anthropicKeyProblem } from "./config.js";
-import { TelnyxClient } from "./telnyx/client.js";
+import { telnyxBaseUrlProblem } from "./telnyx/client.js";
 import { isTelnyxPublicKey } from "./telnyx/signature.js";
 
 /** What `npm run phone` reads from the environment, with the defaults the spec plans until the spike chooses. */
@@ -48,12 +48,9 @@ export function readPhoneConfig(env: NodeJS.ProcessEnv): { config: PhoneConfig }
   if (apiKey === undefined) {
     problems.push(notSet("TELNYX_API_KEY", "Put your Telnyx API key in .env (bash scripts/telnyx-setup.sh records it)"));
   } else {
-    // The Telnyx address is checked by the client, which says what is wrong with it. Its message never holds the key.
-    try {
-      TelnyxClient.fromEnv(env);
-    } catch (error) {
-      problems.push(error instanceof Error ? error.message : "TELNYX_BASE_URL is not usable.");
-    }
+    // The Telnyx address is checked with the client's own rule, which says what is wrong with it. It never holds the key.
+    const addressProblem = telnyxBaseUrlProblem(env);
+    if (addressProblem) problems.push(addressProblem);
   }
 
   const publicKey = set(env, "TELNYX_PUBLIC_KEY");

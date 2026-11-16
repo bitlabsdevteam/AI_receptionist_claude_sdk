@@ -65,6 +65,15 @@ describe("readPhoneConfig", () => {
     },
   );
 
+  it("refuses a Telnyx address that is neither https nor on this machine, and accepts one that is", () => {
+    const lines = problemsOf({ ...complete, TELNYX_BASE_URL: "http://example.com" });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("TELNYX_BASE_URL");
+    expect(lines[0]).not.toContain(complete.TELNYX_API_KEY);
+    expect(configOf({ ...complete, TELNYX_BASE_URL: "http://127.0.0.1:4010" }).port).toBe(3000);
+    expect(configOf({ ...complete, TELNYX_BASE_URL: "  " }).port).toBe(3000);
+  });
+
   it("takes a trailing slash and a port on the public address", () => {
     expect(configOf({ ...complete, PUBLIC_BASE_URL: "https://abc.example:8443/" }).relayBase).toBe("wss://abc.example:8443");
   });

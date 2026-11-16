@@ -123,6 +123,21 @@ function checkedBaseUrl(raw: string): string {
   return trimmed;
 }
 
+/**
+ * What is wrong with `TELNYX_BASE_URL` as the environment gives it, or undefined when it is usable (blank means the
+ * default). The same check the client makes, for a caller that wants to know before it builds one.
+ */
+export function telnyxBaseUrlProblem(env: Record<string, string | undefined>): string | undefined {
+  const raw = env.TELNYX_BASE_URL?.trim();
+  if (!raw) return undefined;
+  try {
+    checkedBaseUrl(raw);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : "TELNYX_BASE_URL is not usable.";
+  }
+}
+
 /** The call's id in a path as Telnyx writes it (`v3:...`): a colon stays, anything that could change the path is escaped. */
 function pathSegment(id: string): string {
   return encodeURIComponent(id).replaceAll("%3A", ":");
