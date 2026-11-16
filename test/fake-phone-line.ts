@@ -14,11 +14,27 @@ export interface Said {
 export class FakePhoneLine implements PhoneLine {
   readonly said: Said[] = [];
   readonly failures: Error[] = [];
+  /** What the line was asked to close a Call with, in order. */
+  readonly closed: Said[] = [];
+  /** The Calls the line was asked to hang up, in order. */
+  readonly hungUp: string[] = [];
+  /** Each error put here makes one `closeWith()` throw instead. */
+  readonly closeFailures: Error[] = [];
 
   say(callId: string, text: string): void {
     const failure = this.failures.shift();
     if (failure) throw failure;
     this.said.push({ callId, text });
+  }
+
+  closeWith(callId: string, text: string): void {
+    const failure = this.closeFailures.shift();
+    if (failure) throw failure;
+    this.closed.push({ callId, text });
+  }
+
+  hangUp(callId: string): void {
+    this.hungUp.push(callId);
   }
 
   /** What the Caller on one Call was told, in order. */
