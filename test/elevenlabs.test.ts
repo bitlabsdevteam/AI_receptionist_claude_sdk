@@ -29,6 +29,38 @@ function cannedFetch(...script: Array<Response | Error>) {
 
 const audio = () => new Response(MP3, { status: 200, headers: { "content-type": "audio/mpeg" } });
 
+/** A 200 response whose body starts to arrive and then fails with `error`, as when the connection drops part-way. */
+function cutOff(error: Error): Response {
+  let sent = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent) return controller.error(error);
+      sent = true;
+      controller.enqueue(MP3);
+    },
+  });
+  return new Response(body, { status: 200 });
+}
+
+/** An HTTP client that never answers. Like the real `fetch`, it gives up only when the request's `signal` aborts. */
+const silentFetch = ((_url: string | URL | Request, init?: RequestInit) =>
+  new Promise<Response>((_, reject) => {
+    const signal = init?.signal;
+    signal?.addEventListener("abort", () => reject(signal.reason as Error));
+  })) as typeof globalThis.fetch;
+
+/** An HTTP client that answers at once and then stalls part-way through the body, until the request's `signal` aborts. */
+const stallingFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+  const signal = init?.signal;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(MP3);
+      signal?.addEventListener("abort", () => controller.error(signal.reason));
+    },
+  });
+  return new Response(body, { status: 200 });
+}) as typeof globalThis.fetch;
+
 /** A stand-in player: records the file it was given and the bytes in it at that moment. Plays nothing. */
 function recordingPlayer(fail?: Error) {
   const played: Array<{ path: string; bytes: Uint8Array }> = [];
@@ -156,6 +188,39 @@ describe("ElevenLabsVoice.speak", () => {
     const error = await failureOf(voice(fetch, player).speak("Hi"));
     expect(error.message).toMatch(/no audio/i);
     expect(played).toHaveLength(0);
+  });
+
+  it("maps a connection that drops while the audio arrives to a VoiceError without the key, and plays nothing", async () => {
+    const { fetch } = cannedFetch(cutOff(new TypeError(`terminated (xi-api-key: ${KEY})`)));
+    const { player, played } = recordingPlayer();
+    const error = await failureOf(voice(fetch, player).speak("Hi"));
+
+    expect(error.message).toMatch(/connection/i);
+    expect(error.message).toContain("terminated");
+    expect(error.message).not.toContain(KEY);
+    expect(String(error.cause ?? "")).not.toContain(KEY);
+    expect(played).toHaveLength(0);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it("gives up on a request that is not answered within the timeout, with a VoiceError that says so", async () => {
+    const { player, played } = recordingPlayer();
+    const error = await failureOf(voice(silentFetch, player, { timeoutMs: 20 }).speak("Hi"));
+
+    expect(error.message).toMatch(/reach/i);
+    expect(error.message).toMatch(/timeout/i);
+    expect((error.cause as Error).name).toBe("TimeoutError");
+    expect(played).toHaveLength(0);
+  });
+
+  it("gives up on audio that stalls part-way within the same timeout, and plays nothing", async () => {
+    const { player, played } = recordingPlayer();
+    const error = await failureOf(voice(stallingFetch, player, { timeoutMs: 20 }).speak("Hi"));
+
+    expect(error.message).toMatch(/connection/i);
+    expect(error.message).toMatch(/timeout/i);
+    expect(played).toHaveLength(0);
+    expect(readdirSync(dir)).toEqual([]);
   });
 
   it("keeps a player error message from leaking the key", async () => {
@@ -407,6 +472,23 @@ describe("ElevenLabsVoice.listen: failures", () => {
     expect(error.message).not.toContain(KEY);
     expect(JSON.stringify(error)).not.toContain(KEY);
     expect(String(error.cause ?? "")).not.toContain(KEY);
+  });
+
+  it("maps a connection that drops while the transcript arrives to a VoiceError about the connection, not about the transcript", async () => {
+    const { fetch } = cannedFetch(cutOff(new TypeError(`terminated (xi-api-key: ${KEY})`)));
+    const error = await failureOf(listener(fetch, ONE_SECOND).listen());
+
+    expect(error.message).toMatch(/connection/i);
+    expect(error.message).not.toMatch(/transcript/i);
+    expect(error.message).not.toContain(KEY);
+    expect(String(error.cause ?? "")).not.toContain(KEY);
+  });
+
+  it("gives up on an upload that is not answered within the timeout, with a VoiceError that says so", async () => {
+    const error = await failureOf(listener(silentFetch, ONE_SECOND, { timeoutMs: 20 }).listen());
+
+    expect(error.message).toMatch(/reach/i);
+    expect(error.message).toMatch(/timeout/i);
   });
 
   it("treats a reply that is not JSON as a service error, not as a transcript", async () => {

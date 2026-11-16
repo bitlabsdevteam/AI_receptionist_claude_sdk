@@ -103,11 +103,11 @@ export class ElevenLabsVoice implements Voice {
     const [type, name] = isWav(clip) ? ["audio/wav", "clip.wav"] : ["application/octet-stream", "clip"];
     form.set("file", new Blob([clip as Uint8Array<ArrayBuffer>], { type }), name);
     // No content-type header: fetch sets the multipart boundary itself.
-    const response = await this.#post("/v1/speech-to-text", {}, form);
+    const reply = await this.#post("/v1/speech-to-text", {}, form);
 
     let body: unknown;
     try {
-      body = await response.json();
+      body = JSON.parse(new TextDecoder().decode(reply));
     } catch {
       // The parse error is dropped: it can quote the body, and the body could echo anything.
       throw new VoiceError("ElevenLabs service error: the response was not a transcript.");
@@ -119,18 +119,20 @@ export class ElevenLabsVoice implements Voice {
 
   async #synthesize(text: string): Promise<Uint8Array> {
     const { voiceId, modelId } = this.#config;
-    const response = await this.#post(
+    const bytes = await this.#post(
       `/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=${OUTPUT_FORMAT}`,
       { "content-type": "application/json", accept: "audio/mpeg" },
       JSON.stringify({ text, model_id: modelId || DEFAULT_MODEL_ID }),
     );
-    const bytes = new Uint8Array(await response.arrayBuffer());
     if (bytes.length === 0) throw new VoiceError("ElevenLabs service error: the response had no audio.");
     return bytes;
   }
 
-  /** One request to ElevenLabs, with the key in a header. Speech out and speech in share this, so they fail alike. */
-  async #post(path: string, headers: Record<string, string>, body: string | FormData): Promise<Response> {
+  /**
+   * One request to ElevenLabs, with the key in a header, and the whole body of its reply. Speech out and speech in
+   * share this, so they fail alike: every failure, also one while the body arrives, is a `VoiceError`.
+   */
+  async #post(path: string, headers: Record<string, string>, body: string | FormData): Promise<Uint8Array> {
     const { apiKey, baseUrl, timeoutMs } = this.#config;
     const doFetch = this.#config.fetch ?? globalThis.fetch;
 
@@ -151,7 +153,11 @@ export class ElevenLabsVoice implements Voice {
       void response.body?.cancel().catch(() => {});
       throw new VoiceError(httpFailure(response.status));
     }
-    return response;
+    try {
+      return new Uint8Array(await response.arrayBuffer());
+    } catch (e) {
+      throw new VoiceError(`Lost the connection to ElevenLabs: ${this.#describe(e)}`, { cause: this.#safeCause(e) });
+    }
   }
 
   /** The error's message with the key removed. */
