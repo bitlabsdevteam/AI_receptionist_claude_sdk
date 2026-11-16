@@ -1,5 +1,5 @@
 import type { FlowEngine } from "../engine/engine.js";
-import type { Voice } from "../voice/voice.js";
+import { VoiceInterrupted, type Voice } from "../voice/voice.js";
 import type { ChatIO } from "./chat.js";
 import { TerminalReply } from "./terminal-reply.js";
 
@@ -27,10 +27,19 @@ export async function runTalk(engine: FlowEngine, voice: Voice, io: ChatIO, opti
   const { label = "Receptionist", callId = "terminal" } = options;
   const reply = new TerminalReply(io.write, `${label}: `, io.columns);
 
+  /** Says the Turn's final reply. A failure costs one line of text and nothing else: the Turn and the Call are untouched. */
+  async function speak(text: string): Promise<void> {
+    try {
+      await voice.speak(text);
+    } catch (error) {
+      io.write(`(Could not speak: ${messageOf(error)})\n`);
+    }
+  }
+
   try {
     const greeting = await engine.start(callId, {}, reply);
     reply.end();
-    await voice.speak(greeting.reply);
+    await speak(greeting.reply);
   } catch (error) {
     io.write(`Could not open the Call: ${messageOf(error)}\n`);
     return "failed";
@@ -41,13 +50,26 @@ export async function runTalk(engine: FlowEngine, voice: Voice, io: ChatIO, opti
     if (typed === undefined) return "input-closed";
     let line = typed;
     if (typed === "") {
-      line = (await voice.listen()).trim();
+      try {
+        line = (await voice.listen()).trim();
+      } catch (error) {
+        if (error instanceof VoiceInterrupted) return "interrupted";
+        io.write(`(Could not hear you: ${messageOf(error)}. Please try again.)\n`);
+        turn--;
+        continue;
+      }
+      if (line === "") {
+        // Answered here, not by the Receptionist: nothing reaches the model and no turn id is spent.
+        io.write("I didn't catch that. Please try again.\n");
+        turn--;
+        continue;
+      }
       io.write(`You: ${line}\n`);
     }
     try {
       const result = await engine.handleUser(callId, line, `turn-${turn}`, reply);
       reply.end();
-      await voice.speak(result.reply);
+      await speak(result.reply);
       if (result.ended) return "ended";
     } catch (error) {
       reply.end();
