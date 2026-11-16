@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { PhoneCalls } from "../src/adapters/phone.js";
 import { FlowEngine, REFUSAL_LINE } from "../src/engine/engine.js";
@@ -18,13 +20,13 @@ const CALL = "call-1";
 const NUMBER = "+15551234567";
 
 /** The phone Channel on a scripted model and a fake line, with everything it printed. */
-function phoneWith(script: (ModelResponse | ScriptedFailure)[], callFlow: Flow = flow) {
+function phoneWith(script: (ModelResponse | ScriptedFailure)[], callFlow: Flow = flow, clock?: () => number) {
   const client = new FakeClaude(script);
   const store = new InMemorySessionStore();
   const engine = new FlowEngine(callFlow, { client, store });
   const line = new FakePhoneLine();
   const writes: string[] = [];
-  const phone = new PhoneCalls(engine, line, (text) => void writes.push(text));
+  const phone = new PhoneCalls(engine, line, (text) => void writes.push(text), clock ? { clock } : {});
   return { client, line, phone, output: () => writes.join(""), session: (callId: string = CALL) => store.get(callId) };
 }
 
@@ -363,7 +365,7 @@ describe("an interruption", () => {
 
 describe("when the Caller hangs up", () => {
   it("lets a Turn in flight finish, but does not say its reply", async () => {
-    const { phone, client, line, session } = phoneWith([say(GREETING), say("We are Acme Co.")]);
+    const { phone, client, line, output, session } = phoneWith([say(GREETING), say("We are Acme Co.")]);
     const model = holdModel(client);
     phone.callArrived(CALL, NUMBER);
     phone.lineConnected(CALL);
@@ -376,6 +378,8 @@ describe("when the Caller hangs up", () => {
 
     expect(line.saidOn(CALL)).toEqual([GREETING]);
     expect((await session())?.turns["call-1:1"]?.reply).toBe("We are Acme Co.");
+    // The reply reached nobody, so it is not printed as said and has no timing line.
+    expect(output().endsWith("Caller: Who are you?\nThe Caller hung up.\n")).toBe(true);
   });
 
   it("starts no Turn that was waiting behind the one in flight", async () => {
@@ -438,5 +442,193 @@ describe("when the Caller hangs up", () => {
     expect(line.saidOn(CALL)).toEqual([GREETING]);
     expect(output()).toBe(printed);
     expect(await session()).toEqual(before);
+  });
+});
+
+describe("several Calls at once", () => {
+  it("each keep their own greeting, Turns and replies, whatever happens on the others", async () => {
+    // The model answers in the order it is let through below, which is the order of this script.
+    const { phone, client, line, session } = phoneWith([
+      say("Hello, first Caller."),
+      say("Hello, second Caller."),
+      say("A reply nobody hears."),
+      say("We are Acme Co."),
+      failAfter("Nine", new Error("connection lost")),
+      say("Nine to five."),
+    ]);
+    const model = holdModel(client);
+
+    phone.callArrived("call-1", "+15550001111");
+    phone.callArrived("call-2", "+15550002222");
+    phone.lineConnected("call-2");
+    phone.lineConnected("call-1");
+    await model.answer();
+    await model.answer();
+    expect(line.said).toEqual([
+      { callId: "call-1", text: "Hello, first Caller." },
+      { callId: "call-2", text: "Hello, second Caller." },
+    ]);
+
+    // Both Callers speak, and both Turns are in flight together. Then the first Caller hangs up.
+    phone.callerSaid("call-1", "Is anyone there?");
+    phone.callerSaid("call-2", "Who are you?");
+    await settled();
+    expect(model.asked()).toBe(4);
+    phone.callerHungUp("call-1");
+    await model.answer();
+    await model.answer();
+
+    // The second Call carries on, through a Turn of its own that fails.
+    phone.callerSaid("call-2", "And your hours?");
+    await model.answer();
+    phone.callerSaid("call-2", "And your hours?");
+    await model.answer();
+
+    expect(line.saidOn("call-1")).toEqual(["Hello, first Caller."]);
+    expect(line.saidOn("call-2")).toEqual(["Hello, second Caller.", "We are Acme Co.", "Nine to five."]);
+    expect(Object.keys((await session("call-1"))?.turns ?? {})).toEqual(["call-1:1"]);
+    expect(Object.keys((await session("call-2"))?.turns ?? {})).toEqual(["call-2:1", "call-2:2"]);
+    expect((await session("call-1"))?.variables["caller_number"]).toBe("+15550001111");
+    expect((await session("call-2"))?.variables["caller_number"]).toBe("+15550002222");
+    expect(JSON.stringify((await session("call-2"))?.transcript)).not.toContain("Is anyone there?");
+  });
+});
+
+describe("what is printed", () => {
+  /** A phone on a fake clock, which moves only when the model answers: every answer takes `modelMs`. */
+  function timedPhone(script: (ModelResponse | ScriptedFailure)[], modelMs: number, callFlow: Flow = flow) {
+    let now = 5000;
+    const made = phoneWith(script, callFlow, () => now);
+    const createMessage = made.client.createMessage.bind(made.client);
+    made.client.createMessage = async (request, onTextDelta) => {
+      try {
+        return await createMessage(request, onTextDelta);
+      } finally {
+        now += modelMs;
+      }
+    };
+    return made;
+  }
+
+  it("is the Call arriving, the greeting, each Turn's words on both sides and its timing, and the hang-up", async () => {
+    const { phone, output } = timedPhone([say(GREETING), say("We are Acme Co.")], 450);
+
+    phone.callArrived(CALL, NUMBER);
+    phone.lineConnected(CALL);
+    await settled();
+    phone.callerSaid(CALL, "  Who are you? ");
+    await settled();
+    phone.callerHungUp(CALL);
+
+    expect(output()).toBe(
+      "Call arrived from a number ending 4567.\n" +
+        `Receptionist: ${GREETING}\n` +
+        "Caller: Who are you?\n" +
+        "Receptionist: We are Acme Co.\n" +
+        "(Timing: reply 450 ms)\n" +
+        "The Caller hung up.\n",
+    );
+  });
+
+  it("says that the number was withheld when the Call arrives without one", async () => {
+    const { phone, output } = phoneWith([say(GREETING)]);
+
+    phone.callArrived(CALL);
+    phone.callArrived(CALL);
+    await settled();
+
+    expect(output()).toBe("Call arrived from a withheld number.\n");
+  });
+
+  it("never holds the Caller's whole number, whatever happens on the Call", async () => {
+    const { phone, output } = phoneWith([
+      say(GREETING),
+      say("We are Acme Co."),
+      failAfter("Nine", new Error("connection lost")),
+    ]);
+
+    phone.callArrived(CALL, "+1 (555) 123-4567");
+    phone.callArrived(CALL, "+1 (555) 123-4567");
+    phone.lineConnected(CALL);
+    phone.callerSaid(CALL, "Who are you?");
+    phone.callerInterrupted(CALL);
+    phone.callerSaid(CALL, "And your hours?");
+    await settled();
+    phone.callerHungUp(CALL);
+
+    expect(output().match(/Call arrived/g)).toHaveLength(1);
+    expect(output()).toContain("Call arrived from a number ending 4567.\n");
+    expect(output()).toContain("could not answer");
+    expect(output()).not.toContain("555");
+    expect(output().replace(/\D/g, "")).not.toContain("1234567");
+  });
+
+  it("shows no digit of a number too short to hide behind its last four", async () => {
+    const { phone, output } = phoneWith([say(GREETING), say(GREETING)]);
+
+    phone.callArrived("call-1", "4567");
+    phone.callArrived("call-2", "911");
+    await settled();
+
+    expect(output()).toBe("Call arrived from a short number.\nCall arrived from a short number.\n");
+  });
+
+  it("times a Turn from its utterance arriving, so a Turn that waited behind another shows the wait", async () => {
+    const { phone, output } = timedPhone([say(GREETING), say("We are Acme Co."), say("Nine to five.")], 450);
+    phone.callArrived(CALL, NUMBER);
+    phone.lineConnected(CALL);
+    await settled();
+
+    phone.callerSaid(CALL, "Who are you?");
+    phone.callerSaid(CALL, "And your hours?");
+    await settled();
+
+    expect(output()).toContain(
+      "Caller: Who are you?\n" +
+        "Receptionist: We are Acme Co.\n" +
+        "(Timing: reply 450 ms)\n" +
+        "Caller: And your hours?\n" +
+        "Receptionist: Nine to five.\n" +
+        "(Timing: reply 900 ms)\n",
+    );
+  });
+
+  it("has one timing line per reply said: none for the greeting, an empty utterance, a failed Turn or a reply the line could not take", async () => {
+    const { phone, line, output } = timedPhone(
+      [say(GREETING), failAfter("We are", new Error("connection lost")), say("We are Acme Co."), say("Happy to help.")],
+      449.6,
+    );
+    phone.callArrived(CALL, NUMBER);
+    phone.lineConnected(CALL);
+    await settled();
+    expect(output()).not.toContain("Timing");
+
+    phone.callerSaid(CALL, "  ");
+    phone.callerSaid(CALL, "Who are you?");
+    await settled();
+    expect(output()).not.toContain("Timing");
+
+    phone.callerSaid(CALL, "Who are you?");
+    await settled();
+    line.failures.push(new Error("the line is busy"));
+    phone.callerSaid(CALL, "Thanks.");
+    await settled();
+
+    expect(output().match(/\(Timing: /g)).toHaveLength(1);
+    expect(output()).toContain("Receptionist: We are Acme Co.\n(Timing: reply 450 ms)\n");
+    expect(output().endsWith("Receptionist: Happy to help.\n(Could not say the reply: the line is busy)\n")).toBe(true);
+  });
+});
+
+describe("the phone line seam", () => {
+  it("keeps src/adapters/phone.ts free of Telnyx: none of its names, and no import from src/telnyx/", async () => {
+    const source = await readFile(fileURLToPath(new URL("../src/adapters/phone.ts", import.meta.url)), "utf8");
+    // Every module the file names, whether after `from`, in a bare `import "..."` or in an `import("...")`.
+    const imported = [...source.matchAll(/\b(?:from|import)\s*\(?\s*["']([^"']+)["']/g)].map((match) => match[1]);
+
+    expect(imported).toContain("../engine/engine.js");
+    expect(imported.filter((module) => module?.toLowerCase().includes("telnyx"))).toEqual([]);
+    // Comments count too: the rules of a phone Call are worded without the provider.
+    expect(source.match(/telnyx|webhook|frame|socket|relay/gi) ?? []).toEqual([]);
   });
 });

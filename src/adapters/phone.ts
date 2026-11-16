@@ -8,6 +8,11 @@ export interface PhoneLine {
   say(callId: string, text: string): void;
 }
 
+export interface PhoneOptions {
+  /** Reads the time in ms, for the timing line that follows each Turn. */
+  clock?: () => number;
+}
+
 /** What is kept for a Call while its Caller is on the line. */
 interface PhoneCall {
   readonly id: string;
@@ -36,10 +41,14 @@ export class PhoneCalls {
   /** The ids of the Calls that are over. Whatever the line still reports for one of them is ignored. */
   readonly #over = new Set<string>();
 
-  constructor(engine: FlowEngine, line: PhoneLine, write: (text: string) => void) {
+  readonly #now: () => number;
+
+  /** `write` prints a line for whoever is at the terminal. It is plain output, not a Trace. */
+  constructor(engine: FlowEngine, line: PhoneLine, write: (text: string) => void, options: PhoneOptions = {}) {
     this.#engine = engine;
     this.#line = line;
     this.#write = write;
+    this.#now = options.clock ?? (() => performance.now());
   }
 
   /**
@@ -53,6 +62,7 @@ export class PhoneCalls {
     const number = callerNumber?.trim();
     const call: PhoneCall = { id: callId, connected, connect, turns: 0, work: Promise.resolve() };
     this.#calls.set(callId, call);
+    this.#write(`Call arrived from ${shownNumber(number)}.\n`);
     call.work = this.#greet(call, this.#engine.start(callId, number ? { callerNumber: number } : {}));
   }
 
@@ -67,7 +77,8 @@ export class PhoneCalls {
     const utterance = text.trim();
     // Nothing heard is not a Turn: it reaches nothing and spends no turn id.
     if (!call || utterance === "") return;
-    call.work = call.work.then(() => this.#turn(call, utterance));
+    const heard = this.#now();
+    call.work = call.work.then(() => this.#turn(call, utterance, heard));
   }
 
   /**
@@ -103,9 +114,14 @@ export class PhoneCalls {
     this.#say(call, greeting.reply);
   }
 
-  /** Runs one Turn and says its reply. A Turn that fails was not recorded by the engine, so it spends no turn id. */
-  async #turn(call: PhoneCall, utterance: string): Promise<void> {
+  /**
+   * Runs one Turn and says its reply. `heard` is when the utterance arrived, which may be well before the Turn starts:
+   * the timing line counts the wait behind the greeting or an earlier Turn, because the Caller waits through it too.
+   * A Turn that fails was not recorded by the engine, so it spends no turn id.
+   */
+  async #turn(call: PhoneCall, utterance: string, heard: number): Promise<void> {
     if (this.#isOver(call)) return;
+    this.#write(`Caller: ${utterance}\n`);
     const turn = call.turns + 1;
     let result: TurnResult;
     try {
@@ -116,18 +132,22 @@ export class PhoneCalls {
     }
     if (this.#isOver(call)) return;
     call.turns = turn;
-    this.#say(call, result.reply);
+    if (this.#say(call, result.reply)) this.#write(`(Timing: reply ${Math.round(this.#now() - heard)} ms)\n`);
   }
 
   /**
-   * Hands the Receptionist's words to the line: the greeting, or a finished Turn's reply. A line that cannot take them
-   * costs one printed line and nothing else. The Turn stands and the Call carries on.
+   * Prints the Receptionist's words, the greeting or a finished Turn's reply, and hands them to the line. A line that
+   * cannot take them costs one printed line and nothing else: the Turn stands and the Call carries on. Returns whether
+   * the line took them.
    */
-  #say(call: PhoneCall, text: string): void {
+  #say(call: PhoneCall, text: string): boolean {
+    this.#write(`Receptionist: ${text}\n`);
     try {
       this.#line.say(call.id, text);
+      return true;
     } catch (error) {
       this.#write(`(Could not say the reply: ${messageOf(error)})\n`);
+      return false;
     }
   }
 
@@ -145,4 +165,14 @@ export class PhoneCalls {
     this.#over.add(call.id);
     call.connect();
   }
+}
+
+/**
+ * How a Caller's number is printed: by its last four digits, never whole. No number is a withheld one. A number of
+ * four digits or fewer would be whole in its last four, so none of it is shown.
+ */
+function shownNumber(number: string | undefined): string {
+  if (!number) return "a withheld number";
+  const digits = number.replace(/\D/g, "");
+  return digits.length > 4 ? `a number ending ${digits.slice(-4)}` : "a short number";
 }
