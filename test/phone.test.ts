@@ -1,11 +1,11 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { PhoneCalls } from "../src/adapters/phone.js";
-import { FlowEngine } from "../src/engine/engine.js";
+import { FlowEngine, REFUSAL_LINE } from "../src/engine/engine.js";
 import type { ModelResponse } from "../src/engine/model.js";
 import { InMemorySessionStore } from "../src/engine/session.js";
 import { loadFlow } from "../src/flow/load.js";
 import type { Flow } from "../src/flow/schema.js";
-import { FakeClaude, GREETING, say, type ScriptedFailure } from "./fake-claude.js";
+import { FakeClaude, GREETING, failAfter, flowWithBilling, reply, say, transition, type ScriptedFailure } from "./fake-claude.js";
 import { FakePhoneLine, settled } from "./fake-phone-line.js";
 
 let flow: Flow;
@@ -201,5 +201,74 @@ describe("what the Caller says", () => {
     expect(line.saidOn(CALL)).toEqual([GREETING, "We are Acme Co."]);
     expect(Object.keys((await session())?.turns ?? {})).toEqual(["call-1:1"]);
     expect(output()).not.toContain("does not exist");
+  });
+});
+
+describe("what the line is asked to say", () => {
+  it("is the finished Turn's whole reply, once, when the Turn ran more than one Node", async () => {
+    const { phone, line } = await greetedCall(
+      [transition("e_start_billing", "One moment."), say("Let me look at that invoice.")],
+      flowWithBilling(flow),
+    );
+
+    phone.callerSaid(CALL, "I have a question about my invoice.");
+    await settled();
+
+    expect(line.saidOn(CALL)).toEqual([GREETING, "One moment. Let me look at that invoice."]);
+  });
+
+  it("is the safe line alone when the model refuses, never the text that streamed before the refusal", async () => {
+    const { phone, line } = await greetedCall([reply([{ type: "text", text: "Sure, here is how to do it" }], "refusal")]);
+
+    phone.callerSaid(CALL, "Something awful");
+    await settled();
+
+    expect(line.saidOn(CALL)).toEqual([GREETING, REFUSAL_LINE]);
+  });
+
+  it("is the safe greeting alone when the model refuses the greeting", async () => {
+    const { phone, line } = phoneWith([reply([{ type: "text", text: "I cannot take this call" }], "refusal")]);
+
+    phone.callArrived(CALL, NUMBER);
+    phone.lineConnected(CALL);
+    await settled();
+
+    expect(line.saidOn(CALL)).toHaveLength(1);
+    expect(line.saidOn(CALL)[0]).toContain("Ava");
+    expect(line.saidOn(CALL)[0]).not.toContain("cannot take this call");
+  });
+
+  it("is nothing from a Turn that failed after text had streamed, and the Call carries on", async () => {
+    const { phone, line, output, session } = await greetedCall([
+      failAfter("We are", new Error("connection lost")),
+      say("We are Acme Co."),
+    ]);
+
+    phone.callerSaid(CALL, "Who are you?");
+    await settled();
+    expect(line.saidOn(CALL)).toEqual([GREETING]);
+    expect(output()).toContain("(The Receptionist could not answer: connection lost)\n");
+
+    phone.callerSaid(CALL, "Who are you?");
+    await settled();
+
+    expect(line.saidOn(CALL)).toEqual([GREETING, "We are Acme Co."]);
+    // The failed Turn was not recorded, so it spent no turn id.
+    expect(Object.keys((await session())?.turns ?? {})).toEqual(["call-1:1"]);
+  });
+
+  it("is nothing when the greeting could not be made, and nothing the Caller then says starts a Turn", async () => {
+    const { phone, client, line, output } = phoneWith([failAfter("Hello, this", new Error("overloaded"))]);
+
+    phone.callArrived(CALL, NUMBER);
+    phone.lineConnected(CALL);
+    await settled();
+    phone.callerSaid(CALL, "Hello?");
+    phone.callArrived(CALL, NUMBER);
+    await settled();
+
+    expect(line.said).toEqual([]);
+    expect(client.requests).toHaveLength(1);
+    expect(output()).toContain("Could not open the Call: overloaded\n");
   });
 });
