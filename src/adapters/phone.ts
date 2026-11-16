@@ -1,6 +1,6 @@
 import type { FlowEngine } from "../engine/engine.js";
 import type { TurnResult } from "../engine/turn.js";
-import { messageOf } from "./chat.js";
+import { messageOf } from "./message-of.js";
 
 /**
  * The fixed lines. They are the adapter's own words: they are never sent to the model, never stored in the Call's

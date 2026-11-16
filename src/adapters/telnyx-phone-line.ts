@@ -1,5 +1,5 @@
 import type { WebSocket } from "ws";
-import { messageOf } from "./chat.js";
+import { messageOf } from "./message-of.js";
 import type { PhoneLine } from "./phone.js";
 import type { TelnyxClient } from "../telnyx/client.js";
 import { textFrame } from "../telnyx/frames.js";

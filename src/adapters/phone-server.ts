@@ -8,7 +8,7 @@ import { parseWebhookEvent, type CallArrived, type TelnyxEvent } from "../telnyx
 import { parseRelayFrame } from "../telnyx/frames.js";
 import { RelayTokens } from "../telnyx/relay-tokens.js";
 import { checkWebhookSignature } from "../telnyx/signature.js";
-import { messageOf } from "./chat.js";
+import { messageOf } from "./message-of.js";
 import { PhoneCalls, shownNumber, type PhoneOptions } from "./phone.js";
 import { TelnyxPhoneLine } from "./telnyx-phone-line.js";
 
