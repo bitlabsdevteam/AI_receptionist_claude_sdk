@@ -53,8 +53,9 @@ export class ElevenLabsVoice implements Voice {
   }
 
   /**
-   * Reads `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` (required), and `ELEVENLABS_MODEL_ID` and
-   * `ELEVENLABS_STT_MODEL_ID` (optional). The recorder is not in the environment: pass it in `injected`.
+   * Reads `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` (required), and `ELEVENLABS_MODEL_ID`,
+   * `ELEVENLABS_STT_MODEL_ID` and `ELEVENLABS_BASE_URL` (optional). The recorder is not in the environment: pass it in
+   * `injected`, which wins over the environment.
    */
   static fromEnv(env: Environment = process.env, injected: Injected = {}): ElevenLabsVoice {
     const apiKey = env.ELEVENLABS_API_KEY?.trim();
@@ -63,7 +64,8 @@ export class ElevenLabsVoice implements Voice {
     if (!voiceId) throw new VoiceError("ELEVENLABS_VOICE_ID is not set. Put the id of the ElevenLabs voice to use in .env or the environment.");
     const modelId = env.ELEVENLABS_MODEL_ID?.trim() || undefined;
     const sttModelId = env.ELEVENLABS_STT_MODEL_ID?.trim() || undefined;
-    return new ElevenLabsVoice({ apiKey, voiceId, modelId, sttModelId, ...injected });
+    const baseUrl = env.ELEVENLABS_BASE_URL?.trim();
+    return new ElevenLabsVoice({ apiKey, voiceId, modelId, sttModelId, ...(baseUrl ? { baseUrl } : {}), ...injected });
   }
 
   async speak(text: string): Promise<void> {

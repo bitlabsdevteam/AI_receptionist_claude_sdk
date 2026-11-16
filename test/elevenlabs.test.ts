@@ -454,6 +454,22 @@ describe("ElevenLabsVoice.fromEnv", () => {
     expect((calls[1]!.init.body as FormData).get("model_id")).toBe(DEFAULT_STT_MODEL_ID);
   });
 
+  it("reads the API host from ELEVENLABS_BASE_URL, and uses the default host when it is unset or blank", async () => {
+    const { fetch, calls } = cannedFetch(audio(), audio(), audio());
+    const env = { ELEVENLABS_API_KEY: KEY, ELEVENLABS_VOICE_ID: "abc" };
+    const injected = { fetch, player: recordingPlayer().player, tmpDir: dir };
+
+    await ElevenLabsVoice.fromEnv({ ...env, ELEVENLABS_BASE_URL: " https://api.eu.residency.elevenlabs.io " }, injected).speak("Hi");
+    await ElevenLabsVoice.fromEnv({ ...env, ELEVENLABS_BASE_URL: " " }, injected).speak("Hi");
+    await ElevenLabsVoice.fromEnv(env, injected).speak("Hi");
+
+    expect(calls.map((call) => new URL(call.url).origin)).toEqual([
+      "https://api.eu.residency.elevenlabs.io",
+      "https://api.elevenlabs.io",
+      "https://api.elevenlabs.io",
+    ]);
+  });
+
   it("names the missing variable, and treats a blank value as missing", () => {
     expect(() => ElevenLabsVoice.fromEnv({ ELEVENLABS_VOICE_ID: "abc" })).toThrow(/ELEVENLABS_API_KEY/);
     expect(() => ElevenLabsVoice.fromEnv({ ELEVENLABS_API_KEY: KEY })).toThrow(/ELEVENLABS_VOICE_ID/);
