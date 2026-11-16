@@ -109,7 +109,7 @@ The first Flow has two Nodes:
 | **Idempotency and ordering** | Turns are idempotent on `turnId` and run one at a time per Call. | **Built** |
 | **Streaming rule** | A stream is shown exactly the Turn's final reply, or told to discard first. | **Built** (`reply-stream.ts`) |
 | **State** | `Session` (the Call's state) behind a `SessionStore`. | **Built** (in-memory only). TTL and external store **Planned**. |
-| **Model client** | `AnthropicModelClient` with adaptive thinking, explicit effort, server-side refusal fallback. | **Built**, never run against the real API. OpenRouter **Planned**. |
+| **Model client** | `AnthropicModelClient` with adaptive thinking, explicit effort, server-side refusal fallback. | **Built**, run against the real API on the happy path only (M3). OpenRouter **Planned**. |
 | **Tools and permissions** | A tool registry with Zod-validated inputs, and per-Node tool allow-lists. | **Planned** (needed by verify). |
 | **Guards** | Named, code-enforced rules on Edges, tools and replies. | **Partly built** (Edge and reply guards for refusals, empty replies and End states). The verify guards are **Planned** (§8.3). |
 | **Traces** | A structured record per Turn: hops, latency, tokens, stop reasons, Edges taken, Guard decisions. | **Planned** (§8.4). Nothing logs today. |
@@ -519,7 +519,7 @@ Never commit keys. The Flow file never contains secrets.
 - **DB tests (planned).** In-memory SQLite (`:memory:`) per test, seeded fixtures.
 - **Tier 2, Trace replay (planned).** Deterministic engine regression from recorded Calls.
 - **Tier 3, live Scenarios (planned).** Per §8.5, opt-in, capped.
-- **Live smoke test (built, never run).** `test/live.test.ts`, gated behind `RUN_LIVE=1`, asserts facts that hold every run (name, no markdown, closing message once, stream equals reply).
+- **Live smoke test (built, passed once).** `test/live.test.ts`, gated behind `RUN_LIVE=1`, asserts facts that hold every run (name, no markdown, closing message once, stream equals reply). It passed against the real API on 2026-11-16 (M3).
 - **Voice tests (built).** `FakeVoice` scripts what is heard and records what is spoken, and covers the spoken Call's loop with `FakeClaude`. `ElevenLabsVoice` is exercised against canned HTTP responses with an injected player and recorder, and the recorder against a stand-in for `ffmpeg`. `npm run talk` is run as a whole program against a local server that stands in for Anthropic and ElevenLabs, with stand-ins for `afplay` and `ffmpeg`. No sound is played and no microphone is opened.
 - **Live Voice check (built, never run).** `test/live-voice.test.ts`, behind the same `RUN_LIVE=1` gate (`npm run test:live` runs both live files). One sentence is spoken to a player that keeps the mp3 instead of playing it, and that mp3 is then transcribed. An offline test proves that `npm test` skips it and that it stops on the missing-key message when there is no key.
 
@@ -529,9 +529,9 @@ Never commit keys. The Flow file never contains secrets.
 |---|---|---|---|
 | M0 | Scaffold, Flow schema and loader (#1) | Typecheck passes and the sample Flow validates | **Done** |
 | M1 | Engine, `FakeClaude`, greeting, Turns, goodbye End state (#2–#4) | S1, S8, S9 and S11 pass offline | **Done** |
-| M2 | Anthropic client, terminal chat, `CLAUDE.md` (#5, #6) | Works against canned streams | **Done** (live path not yet run) |
+| M2 | Anthropic client, terminal chat, `CLAUDE.md` (#5, #6) | Works against canned streams | **Done** (live path first run in M3) |
 | — | **Spoken Call in the terminal** (#8, §8.6 Option C, outside the numbered plan): the `Voice` interface, an ElevenLabs Voice, push-to-talk, `npm run talk` | Works against canned HTTP and stand-ins for `afplay` and `ffmpeg` | **Done** (live path not yet run, no spoken Call held) |
-| M3 | **First live run.** Run `npm run chat` and `npm run test:live` with a real key, fix what breaks, and time each Turn by hand | A real conversation works, and the fallback beta and streaming behave | Next |
+| M3 | **First live run.** Run `npm run chat` and `npm run test:live` with a real key, fix what breaks, and time each Turn by hand | A real conversation works, and the fallback beta and streaming behave | **Done** for the typed Call (#19, 2026-11-16): `test/live.test.ts` passed and one typed Call reached `goodbye`, with nothing to fix. Replies began 1.6 to 2.2 s after the Caller's line. The fallback beta was accepted but never seen taking over, and `npm run test:live` as a whole was not run (its Voice half needs the ElevenLabs keys) |
 | M4 | **Traces.** `ModelResponse` usage and timings, `TraceSink`, JSONL sink, redaction | Every Turn writes a valid Trace and latency per hop is visible | Planned |
 | M5 | **Tool registry, Guards, SQLite, verify Node** | S2–S7 and S10 pass offline, invariants I1, I8 and I9 hold | Planned |
 | M6 | **Evaluation harness.** Scenario format, simulated Caller, judge, regression gate, Trace promotion | A broken Flow fails the live Scenarios and the fixed Flow passes | Planned |
@@ -548,7 +548,7 @@ Never commit keys. The Flow file never contains secrets.
 | Weak verification factors (ID + DOB are guessable or known to others) | Attempt limits, per-ID rate limit, ANI signal. Add a PIN or one-time code before exposing sensitive data. |
 | Speech-to-text mangles IDs and dates | Normalisation layer, a confirm-back step for the ID, then a DOB re-ask. |
 | 2+ sequential model calls per Edge cause dead air | Trace per-hop latency, add deterministic `expression` Edges, stream the first Node's text while the next runs, spoken acknowledgement. |
-| The live Anthropic path has never run | M3 comes before anything else is built on it. |
+| The live Anthropic path has run on the happy path only | A refusal, the fallback taking over, a cut-off reply and a failed or retried request are still seen only against canned streams. The engine's rules for them (I2 to I6) are tested offline. |
 | The ElevenLabs path has never run, and no spoken Call has been held | Run the live Voice check and hold a spoken Call by hand before relying on the Voice. The text is always printed, so a Voice failure costs one line and does not stop a Call. |
 | Evaluation is flaky or expensive | N runs per Scenario with pass rates, cheap simulated Caller, spend cap, opt-in only. |
 | LLM judge is biased or drifts | Code assertions decide pass/fail, the judge only scores, rubrics are versioned, humans sample judged runs. |
