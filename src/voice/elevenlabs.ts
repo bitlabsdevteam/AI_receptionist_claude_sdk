@@ -1,0 +1,169 @@
+import { readElevenLabsEnv, type ElevenLabsEnv } from "./elevenlabs-env.js";
+import { afplayPlayer, playBytes, type Player } from "./player.js";
+import type { Recorder } from "./recorder.js";
+import { VoiceError, type Voice } from "./voice.js";
+import { clipMs, isWav } from "./wav.js";
+
+/** Low-latency text-to-speech model with a documented 40,000 character limit. Override with `ELEVENLABS_MODEL_ID`. */
+export const DEFAULT_TTS_MODEL_ID = "eleven_flash_v2_5";
+
+/** Speech-to-text model, the one the API reference uses. The endpoint requires one. Override with `ELEVENLABS_STT_MODEL_ID`. */
+export const DEFAULT_STT_MODEL_ID = "scribe_v2";
+
+/** ElevenLabs rejects audio shorter than this, so a shorter clip counts as nothing heard and is never uploaded. */
+const MIN_CLIP_MS = 100;
+
+const DEFAULT_BASE_URL = "https://api.elevenlabs.io";
+const OUTPUT_FORMAT = "mp3_44100_128";
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * What an `ElevenLabsVoice` is made with. `ttsModelId` (text-to-speech) defaults to `DEFAULT_TTS_MODEL_ID`,
+ * `sttModelId` (speech-to-text) to `DEFAULT_STT_MODEL_ID`, and `baseUrl` to the global API host.
+ */
+export interface ElevenLabsConfig extends ElevenLabsEnv {
+  /** Give up on the request, the arrival of its body included, after this long in ms. Defaults to 30 s. */
+  timeoutMs?: number;
+  /** HTTP client. Defaults to the global `fetch`. */
+  fetch?: typeof globalThis.fetch;
+  /** Plays the mp3. Defaults to macOS `afplay`. */
+  player?: Player;
+  /** Where the temp mp3 is written. Defaults to `os.tmpdir()`. */
+  tempDir?: string;
+  /** Records the Caller for `listen()`, for example `() => recordClip({ waitForEnter })`. */
+  recorder?: Recorder;
+}
+
+/**
+ * The Voice backed by ElevenLabs. `speak` sends the text to the text-to-speech endpoint, plays the mp3 and deletes it.
+ * `listen` is push-to-talk: the recorder returns one clip of the Caller, which goes to the speech-to-text endpoint, and
+ * the transcript comes back trimmed (empty when nothing was heard). No message or `cause` this class raises contains
+ * the API key.
+ */
+export class ElevenLabsVoice implements Voice {
+  readonly #config: ElevenLabsConfig;
+
+  constructor(config: ElevenLabsConfig) {
+    this.#config = config;
+  }
+
+  /**
+   * A Voice set up from the environment, as `readElevenLabsEnv` reads it. Throws a `VoiceError` naming every required
+   * variable that is missing. Whatever is in `overrides` wins over the environment. The recorder, the player and the
+   * HTTP client are not in the environment at all, so that is where they are passed.
+   */
+  static fromEnv(env: NodeJS.ProcessEnv = process.env, overrides: Partial<ElevenLabsConfig> = {}): ElevenLabsVoice {
+    return new ElevenLabsVoice({ ...readElevenLabsEnv(env), ...overrides });
+  }
+
+  async speak(text: string): Promise<void> {
+    if (!text.trim()) return;
+    const audio = await this.#synthesize(text);
+    try {
+      await playBytes(audio, this.#config.player ?? afplayPlayer, this.#config.tempDir);
+    } catch (e) {
+      throw new VoiceError(`Could not play the speech: ${this.#describe(e)}`, { cause: this.#safeCause(e) });
+    }
+  }
+
+  async listen(onRecorded?: () => void): Promise<string> {
+    const { recorder } = this.#config;
+    if (!recorder) throw new VoiceError("Speech in needs a recorder, and this Voice was given none.");
+    let clip: Uint8Array;
+    try {
+      clip = await recorder();
+    } catch (e) {
+      // A VoiceError is the recorder's own account, and a VoiceInterrupted must reach the adapter as it is.
+      if (e instanceof VoiceError) throw e;
+      throw new VoiceError(`Could not record: ${this.#describe(e)}`, { cause: this.#safeCause(e) });
+    }
+    onRecorded?.();
+    return this.#transcribe(clip);
+  }
+
+  async #transcribe(clip: Uint8Array): Promise<string> {
+    if (clipMs(clip) < MIN_CLIP_MS) return "";
+
+    const form = new FormData();
+    form.set("model_id", this.#config.sttModelId || DEFAULT_STT_MODEL_ID);
+    // Tags such as (laughter) would be written into the text, and they are not the Caller's words.
+    form.set("tag_audio_events", "false");
+    const [type, name] = isWav(clip) ? ["audio/wav", "clip.wav"] : ["application/octet-stream", "clip"];
+    form.set("file", new Blob([clip as Uint8Array<ArrayBuffer>], { type }), name);
+    // No content-type header: fetch sets the multipart boundary itself.
+    const reply = await this.#post("/v1/speech-to-text", {}, form);
+
+    let body: unknown;
+    try {
+      body = JSON.parse(new TextDecoder().decode(reply));
+    } catch {
+      // The parse error is dropped: it can quote the body, and the body could echo anything.
+      throw new VoiceError("ElevenLabs service error: the response was not a transcript.");
+    }
+    const text = typeof body === "object" && body !== null ? (body as { text?: unknown }).text : undefined;
+    // Anything that is not a transcript counts as nothing heard. Words are never made up.
+    return typeof text === "string" ? text.trim() : "";
+  }
+
+  async #synthesize(text: string): Promise<Uint8Array> {
+    const { voiceId, ttsModelId } = this.#config;
+    const bytes = await this.#post(
+      `/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=${OUTPUT_FORMAT}`,
+      { "content-type": "application/json", accept: "audio/mpeg" },
+      JSON.stringify({ text, model_id: ttsModelId || DEFAULT_TTS_MODEL_ID }),
+    );
+    if (bytes.length === 0) throw new VoiceError("ElevenLabs service error: the response had no audio.");
+    return bytes;
+  }
+
+  /**
+   * One request to ElevenLabs, with the key in a header, and the whole body of its reply. Speech out and speech in
+   * share this, so they fail alike: every failure, also one while the body arrives, is a `VoiceError`.
+   */
+  async #post(path: string, headers: Record<string, string>, body: string | FormData): Promise<Uint8Array> {
+    const { apiKey, baseUrl, timeoutMs } = this.#config;
+    const doFetch = this.#config.fetch ?? globalThis.fetch;
+
+    let response: Response;
+    try {
+      response = await doFetch(`${baseUrl ?? DEFAULT_BASE_URL}${path}`, {
+        method: "POST",
+        headers: { "xi-api-key": apiKey, ...headers },
+        body,
+        signal: AbortSignal.timeout(timeoutMs ?? DEFAULT_TIMEOUT_MS),
+      });
+    } catch (e) {
+      throw new VoiceError(`Could not reach ElevenLabs: ${this.#describe(e)}`, { cause: this.#safeCause(e) });
+    }
+
+    if (!response.ok) {
+      // Never read the body: its shape is not relied on, and it could echo anything.
+      void response.body?.cancel().catch(() => {});
+      throw new VoiceError(httpFailure(response.status));
+    }
+    try {
+      return new Uint8Array(await response.arrayBuffer());
+    } catch (e) {
+      throw new VoiceError(`Lost the connection to ElevenLabs: ${this.#describe(e)}`, { cause: this.#safeCause(e) });
+    }
+  }
+
+  /** The error's message with the key removed. */
+  #describe(e: unknown): string {
+    const message = e instanceof Error ? e.message : String(e);
+    return message.split(this.#config.apiKey).join("[redacted]");
+  }
+
+  /** A stand-in for the original error that keeps its name and redacted message but none of its other properties. */
+  #safeCause(e: unknown): Error {
+    const safe = new Error(this.#describe(e));
+    if (e instanceof Error) safe.name = e.name;
+    return safe;
+  }
+}
+
+function httpFailure(status: number): string {
+  if (status === 401 || status === 403) return `ElevenLabs rejected the API key (HTTP ${status}). Check ELEVENLABS_API_KEY.`;
+  if (status === 429) return `ElevenLabs rate limit or quota reached (HTTP ${status}). Try again shortly or check your plan.`;
+  return `ElevenLabs service error (HTTP ${status}).`;
+}

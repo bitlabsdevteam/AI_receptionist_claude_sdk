@@ -1,0 +1,149 @@
+import { spawn as spawnProcess } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { withTempDir } from "./temp-dir.js";
+import { VoiceError } from "./voice.js";
+
+/** Records the Caller once and returns the clip. `ElevenLabsVoice.listen()` uploads whatever this returns. */
+export type Recorder = () => Promise<Uint8Array>;
+
+/**
+ * A running recorder. `stop()` asks it to finish the file, and `kill()` ends it at once, for one that did not stop
+ * when asked. `done` settles once it has exited (rejects if it failed or was killed).
+ */
+export interface RecorderProcess {
+  stop(): void;
+  kill(): void;
+  done: Promise<void>;
+}
+
+/** Starts a command. Injected so tests start no process and open no microphone. */
+export type Spawner = (command: string, args: string[]) => RecorderProcess;
+
+export interface RecordOptions {
+  /**
+   * Resolves when the Caller presses Enter to stop. May reject with `VoiceInterrupted`. `signal` aborts once the
+   * recording no longer waits (the recorder died first), so that a pending read can be called off before it swallows
+   * the Caller's next line.
+   */
+  waitForEnter: (signal: AbortSignal) => Promise<void>;
+  spawn?: Spawner;
+  /** Where the temp directory is made. Defaults to the OS temp directory. */
+  tempDir?: string;
+  /** How long the recorder gets to finish the file once told to stop, in ms, before it is killed. */
+  stopGraceMs?: number;
+}
+
+/** The avfoundation input that is the default microphone. */
+const MICROPHONE = ":default";
+
+/**
+ * Stopping takes ffmpeg a moment, and one recording was seen to spend seconds starting or stopping. Past this it is
+ * not going to stop.
+ */
+const STOP_GRACE_MS = 10_000;
+
+const MISSING_FFMPEG =
+  "Recording needs ffmpeg, which was not found. Install it with `brew install ffmpeg`, then try again.";
+
+/**
+ * Records the Caller from the microphone until `waitForEnter` resolves, and returns the clip as 16 kHz mono 16-bit
+ * WAV bytes (empty if ffmpeg wrote nothing). ffmpeg is started at once: the adapter's Enter at its prompt is the
+ * start, and the Enter awaited here is the stop. Nothing here knows when ffmpeg has opened the microphone, which can
+ * take a moment, so words said straight away may be missed. macOS only (avfoundation). The temp file is removed
+ * whatever happens, and an ffmpeg that does not stop when asked is killed, so a Call never hangs on it. Throws
+ * `VoiceError`; a missing `ffmpeg` names what to install.
+ */
+export function recordClip(options: RecordOptions): Promise<Uint8Array> {
+  return withTempDir(options.tempDir ?? tmpdir(), (dir) => recordInto(join(dir, "clip.wav"), options));
+}
+
+/** Records into `file` and returns what is in it. The file is the caller's to remove. */
+async function recordInto(file: string, options: RecordOptions): Promise<Uint8Array> {
+  const { waitForEnter, spawn = spawnFfmpeg, stopGraceMs = STOP_GRACE_MS } = options;
+  const waiting = new AbortController();
+  let recorder: RecorderProcess | undefined;
+  let stopped: Promise<void> | undefined;
+  /** Stops the recorder once, however often it is asked: after Enter, and again on the way out of a failure. */
+  const stop = (running: RecorderProcess) => (stopped ??= stopRecorder(running, stopGraceMs));
+  try {
+    recorder = spawn("ffmpeg", [
+      ...["-hide_banner", "-loglevel", "error"],
+      ...["-f", "avfoundation", "-i", MICROPHONE],
+      ...["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-y", file],
+    ]);
+    // A recorder that dies early (no ffmpeg, no microphone permission) must not wait for Enter.
+    const died = recorder.done.then(() => new Promise<never>(() => {}));
+    // The race below is what reports a death. Should it never start, this keeps the rejection from going unhandled.
+    died.catch(() => {});
+    await Promise.race([waitForEnter(waiting.signal), died]);
+    await stop(recorder);
+    return await readClip(file);
+  } catch (error) {
+    if (recorder) await stop(recorder).catch(() => {});
+    throw asVoiceError(error);
+  } finally {
+    waiting.abort();
+  }
+}
+
+/**
+ * Asks the recorder to finish the file and waits for it to exit, passing on its failure if it had one. A recorder
+ * that has not exited after `graceMs` is killed, and that is a failed recording: its file may be cut short.
+ */
+async function stopRecorder(recorder: RecorderProcess, graceMs: number): Promise<void> {
+  recorder.stop();
+  if (await exitsWithin(recorder, graceMs)) return recorder.done;
+  recorder.kill();
+  // Bounded as well, so that not even a recorder that outlives a kill can hang the Call.
+  await exitsWithin(recorder, graceMs);
+  throw new Error("ffmpeg did not stop when asked and had to be killed");
+}
+
+/** Whether the recorder exits, in whatever way, within `ms`. */
+function exitsWithin(recorder: RecorderProcess, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const tooLate = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  const exited = recorder.done.then(
+    () => true,
+    () => true,
+  );
+  return Promise.race([exited, tooLate]).finally(() => clearTimeout(timer));
+}
+
+async function readClip(file: string): Promise<Uint8Array> {
+  try {
+    return new Uint8Array(await readFile(file));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Uint8Array(0);
+    throw error;
+  }
+}
+
+function asVoiceError(error: unknown): unknown {
+  if (error instanceof VoiceError) return error;
+  if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return new VoiceError(MISSING_FFMPEG, { cause: error });
+  const reason = error instanceof Error ? error.message : String(error);
+  return new VoiceError(`Recording failed: ${reason}`, { cause: error });
+}
+
+/** The real recorder. ffmpeg finishes the file and exits 0 when it reads `q` on stdin. `SIGKILL` cannot be ignored. */
+const spawnFfmpeg: Spawner = (command, args) => {
+  const child = spawnProcess(command, args, { stdio: ["pipe", "ignore", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr = (stderr + chunk.toString()).slice(-500);
+  });
+  child.stdin.on("error", () => {});
+  const done = new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exited with code ${code}${stderr.trim() ? `: ${stderr.trim()}` : ""}`));
+    });
+  });
+  return { done, stop: () => void child.stdin.end("q"), kill: () => void child.kill("SIGKILL") };
+};
