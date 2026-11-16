@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withTempDir } from "./temp-dir.js";
 
 /** Plays the audio file at `path` and resolves once it has finished. Injectable so tests play nothing. */
 export type Player = (path: string) => Promise<void>;
@@ -13,16 +14,13 @@ export const afplayPlayer: Player = (path) =>
   });
 
 /**
- * Writes the mp3 in `bytes` to a fresh temp file under `dir`, plays it, and deletes it afterwards, also when playing fails.
- * Each call gets its own directory, so nothing is left behind and calls never collide.
+ * Writes the mp3 in `bytes` to a fresh temp file under `tempDir`, plays it, and deletes it afterwards, also when
+ * playing fails.
  */
-export async function playBytes(bytes: Uint8Array, player: Player, dir: string = tmpdir()): Promise<void> {
-  const own = await mkdtemp(join(dir, "receptionist-voice-"));
-  try {
-    const path = join(own, "speech.mp3");
+export function playBytes(bytes: Uint8Array, player: Player, tempDir: string = tmpdir()): Promise<void> {
+  return withTempDir(tempDir, async (dir) => {
+    const path = join(dir, "speech.mp3");
     await writeFile(path, bytes);
     await player(path);
-  } finally {
-    await rm(own, { recursive: true, force: true });
-  }
+  });
 }

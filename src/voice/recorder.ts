@@ -1,7 +1,8 @@
 import { spawn as spawnProcess } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withTempDir } from "./temp-dir.js";
 import { VoiceError } from "./voice.js";
 
 /** Records the Caller once and returns the clip. `ElevenLabsVoice.listen()` uploads whatever this returns. */
@@ -51,10 +52,13 @@ const MISSING_FFMPEG =
  * whatever happens, and an ffmpeg that does not stop when asked is killed, so a Call never hangs on it. Throws
  * `VoiceError`; a missing `ffmpeg` names what to install.
  */
-export async function recordClip(options: RecordOptions): Promise<Uint8Array> {
-  const { waitForEnter, spawn = spawnFfmpeg, tempDir = tmpdir(), stopGraceMs = STOP_GRACE_MS } = options;
-  const dir = await mkdtemp(join(tempDir, "receptionist-"));
-  const file = join(dir, "clip.wav");
+export function recordClip(options: RecordOptions): Promise<Uint8Array> {
+  return withTempDir(options.tempDir ?? tmpdir(), (dir) => recordInto(join(dir, "clip.wav"), options));
+}
+
+/** Records into `file` and returns what is in it. The file is the caller's to remove. */
+async function recordInto(file: string, options: RecordOptions): Promise<Uint8Array> {
+  const { waitForEnter, spawn = spawnFfmpeg, stopGraceMs = STOP_GRACE_MS } = options;
   const waiting = new AbortController();
   let recorder: RecorderProcess | undefined;
   let stopped: Promise<void> | undefined;
@@ -78,7 +82,6 @@ export async function recordClip(options: RecordOptions): Promise<Uint8Array> {
     throw asVoiceError(error);
   } finally {
     waiting.abort();
-    await rm(dir, { recursive: true, force: true });
   }
 }
 
