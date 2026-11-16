@@ -18,10 +18,12 @@ npm run chat                          # a typed Call in the terminal (needs ANTH
 npm run talk                          # a spoken Call in the terminal (also needs ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, macOS, ffmpeg)
 npm run test:live                     # opt-in checks against the real APIs (RUN_LIVE=1), spends money
 cp .env.example .env                  # then set the keys (.env is git-ignored, never commit a key)
+bash scripts/telnyx-setup.sh          # setup wizard for the phone Channel: Telnyx account, keys, ngrok, application, number
 ```
 
 - `npm run chat` reads `ANTHROPIC_API_KEY` from the environment or `.env`. With no key (or the `sk-ant-...` placeholder) it prints a `ANTHROPIC_API_KEY is not set` message and exits 1. `FLOW_PATH` overrides the Flow file (default `flows/receptionist.json`) for `chat` and `talk` alike.
 - `npm run talk` also needs `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID`. It prints one `... is not set` line for every variable that is missing and exits 1 before anything is sent. `ELEVENLABS_MODEL_ID`, `ELEVENLABS_STT_MODEL_ID` and `ELEVENLABS_BASE_URL` are optional, and `.env.example` gives their defaults.
+- `bash scripts/telnyx-setup.sh` is interactive: a person runs it, since it opens the Telnyx portal and waits for them. It guides, checks and records in six steps (account level, API key and public key, `ngrok`, Voice API application, number, allowed Callers) and reports each as done, skipped or failed. Its rules, each with a test in `test/telnyx-setup.test.ts`: it only reads from the Telnyx API (GET), it buys nothing, starts no `ngrok` and places no call, a key or a full phone number is typed without echo, kept in `.env` only and never printed, a stored value is replaced only after the person agrees, and a second run changes nothing. Everything above its `STAGES` marker is the `wizard` skill's library, which is not edited.
 - To run one test file: `npx vitest run test/turn.test.ts`.
 - `npm test` skips `test/live.test.ts` and `test/live-voice.test.ts`. `npm run test:live` runs both, and each fails with its own missing-key message when its key is not set.
 
@@ -92,6 +94,8 @@ A spoken Call is tested the same way. `test/fake-voice.ts` is a scripted `Voice`
 
 `test/live.test.ts` is the opt-in check against the real model. It asserts facts that hold on every run (name, no markdown, closing message appears once, stream equals reply), not exact wording. `test/live-voice.test.ts` is the opt-in check of `ElevenLabsVoice` against the real endpoints: it speaks one sentence to a player that keeps the mp3 instead of playing it, then transcribes that mp3, so nothing is played and the microphone is never opened. `test/live-gate.test.ts` proves offline that `npm test` skips the live Voice check and that `npm run test:live` with empty keys stops on the missing-key message.
 
+`test/telnyx-setup.test.ts` runs the real wizard in a child process in a throwaway directory, against a local HTTP server that stands in for the Telnyx API (`TELNYX_BASE_URL`) and a `PATH` whose `ngrok`, `open` and `mktemp` are stand-ins that record how they were called. Answers are piped in, in the order the wizard asks. Pipes show nothing that is typed, so the two tests of the terminal (no echo of a secret, Ctrl-C) drive the wizard through `expect`, which gives it a real terminal, and are skipped where `expect` is not installed. It proves what the wizard writes, prints and asks, and nothing about the live portal or API.
+
 ## Gotchas
 
 - Node 24 is required (`engines`), and `process.loadEnvFile` is used for `.env`.
@@ -100,7 +104,7 @@ A spoken Call is tested the same way. `test/fake-voice.ts` is a scripted `Voice`
 - Adaptive thinking counts toward `max_tokens` even though it is not returned, which is why the cap is 1024 and not the 300 an earlier draft planned. Replies stay short because the Flow's instructions say 1 to 3 sentences with no markdown, since every reply is read aloud.
 - The client keeps every tool call that arrived with complete JSON input, whatever the stop reason (so a truncated reply still takes a `transition__` Edge), and drops one cut off mid-input. It checks the raw stream JSON for this, because the SDK silently turns a cut-off input into `{}` or a half-filled object. The engine still never takes an Edge from a refusal.
 - vitest has no config and uses its default include globs. Run from the main checkout, it also picks up copies of the tests inside `.claude/worktrees/*`, so run it from inside the checkout or worktree you are working in. Most tests also read `flows/`, `src/` and `.env.example` relative to the current directory, so they fail under `vitest --root` from elsewhere.
-- `.env.example` lists `OPENROUTER_API_KEY` and `DB_PATH` (marked "not used yet" there), but nothing reads them.
+- `.env.example` lists `OPENROUTER_API_KEY` and `DB_PATH` (marked "not used yet" there), but nothing reads them. The same holds for the phone Channel's variables at its end (`TELNYX_API_KEY` and the rest): no program reads them, only the setup wizard, which also writes `TELNYX_ACCOUNT_LEVEL`, a record of its own.
 - `npm run talk` is macOS only: replies are played with `afplay`, and the microphone is recorded with `ffmpeg` through avfoundation (`brew install ffmpeg`). Neither is checked at startup. A missing `ffmpeg` shows at the first recording as a `(Could not hear you: ...)` line that says what to install, and typed lines still work. A reply that cannot be played costs a `(Could not speak: ...)` line.
 - The `(Recording. Press Enter to stop.)` prompt appears when `ffmpeg` is started, not when the microphone is open, and nothing knows that moment. Words said straight away may be missed.
 
