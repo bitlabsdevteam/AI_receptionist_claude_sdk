@@ -1,0 +1,3 @@
+# The spike's logs hold what was said on test calls. They are quoted into the findings by hand, never committed.
+logs/
+*.jsonl
