@@ -294,7 +294,7 @@ export class PhoneCalls {
  * How a Caller's number is printed: by its last four digits, never whole. No number is a withheld one. A number of
  * four digits or fewer would be whole in its last four, so none of it is shown.
  */
-function shownNumber(number: string | undefined): string {
+export function shownNumber(number: string | undefined): string {
   if (!number) return "a withheld number";
   const digits = number.replace(/\D/g, "");
   return digits.length > 4 ? `a number ending ${digits.slice(-4)}` : "a short number";
