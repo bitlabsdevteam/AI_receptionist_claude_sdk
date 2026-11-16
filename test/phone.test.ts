@@ -315,3 +315,128 @@ describe("two things said in quick succession", () => {
     ]);
   });
 });
+
+describe("an interruption", () => {
+  it("is printed and changes nothing in the engine", async () => {
+    const { phone, client, line, output, session } = await greetedCall([say("We are Acme Co."), say("Nine to five.")]);
+    phone.callerSaid(CALL, "Who are you?");
+    await settled();
+    const before = await session();
+
+    phone.callerInterrupted(CALL);
+    await settled();
+
+    expect(output().match(/\(The Caller interrupted\.\)\n/g)).toHaveLength(1);
+    expect(await session()).toEqual(before);
+    expect(client.requests).toHaveLength(2);
+    expect(line.saidOn(CALL)).toEqual([GREETING, "We are Acme Co."]);
+
+    phone.callerSaid(CALL, "And your hours?");
+    await settled();
+    expect(line.saidOn(CALL)).toEqual([GREETING, "We are Acme Co.", "Nine to five."]);
+    expect(Object.keys((await session())?.turns ?? {})).toEqual(["call-1:1", "call-1:2"]);
+  });
+
+  it("leaves a Turn in flight to finish and be said", async () => {
+    const { phone, client, line } = phoneWith([say(GREETING), say("We are Acme Co.")]);
+    const model = holdModel(client);
+    phone.callArrived(CALL, NUMBER);
+    phone.lineConnected(CALL);
+    await model.answer();
+    phone.callerSaid(CALL, "Who are you?");
+    await settled();
+
+    phone.callerInterrupted(CALL);
+    await model.answer();
+
+    expect(line.saidOn(CALL)).toEqual([GREETING, "We are Acme Co."]);
+  });
+
+  it("is not printed for a Call that never arrived", async () => {
+    const { phone, output } = phoneWith([]);
+
+    phone.callerInterrupted("call-9");
+
+    expect(output()).toBe("");
+  });
+});
+
+describe("when the Caller hangs up", () => {
+  it("lets a Turn in flight finish, but does not say its reply", async () => {
+    const { phone, client, line, session } = phoneWith([say(GREETING), say("We are Acme Co.")]);
+    const model = holdModel(client);
+    phone.callArrived(CALL, NUMBER);
+    phone.lineConnected(CALL);
+    await model.answer();
+    phone.callerSaid(CALL, "Who are you?");
+    await settled();
+
+    phone.callerHungUp(CALL);
+    await model.answer();
+
+    expect(line.saidOn(CALL)).toEqual([GREETING]);
+    expect((await session())?.turns["call-1:1"]?.reply).toBe("We are Acme Co.");
+  });
+
+  it("starts no Turn that was waiting behind the one in flight", async () => {
+    const { phone, client, line, session } = phoneWith([say(GREETING), say("We are Acme Co."), say("Nine to five.")]);
+    const model = holdModel(client);
+    phone.callArrived(CALL, NUMBER);
+    phone.lineConnected(CALL);
+    await model.answer();
+    phone.callerSaid(CALL, "Who are you?");
+    phone.callerSaid(CALL, "And your hours?");
+    await settled();
+
+    phone.callerHungUp(CALL);
+    await model.answer();
+    await settled();
+
+    expect(model.asked()).toBe(2);
+    expect(line.saidOn(CALL)).toEqual([GREETING]);
+    expect(Object.keys((await session())?.turns ?? {})).toEqual(["call-1:1"]);
+  });
+
+  it("does not say a greeting that was still being made", async () => {
+    const { phone, client, line } = phoneWith([say(GREETING)]);
+    const model = holdModel(client);
+    phone.callArrived(CALL, NUMBER);
+    phone.lineConnected(CALL);
+
+    phone.callerHungUp(CALL);
+    await model.answer();
+
+    expect(line.said).toEqual([]);
+  });
+
+  it("does not say a greeting that was waiting for the line to connect", async () => {
+    const { phone, line } = phoneWith([say(GREETING)]);
+    phone.callArrived(CALL, NUMBER);
+    await settled();
+
+    phone.callerHungUp(CALL);
+    phone.lineConnected(CALL);
+    await settled();
+
+    expect(line.said).toEqual([]);
+  });
+
+  it("ignores whatever the line reports for the Call afterwards", async () => {
+    const { phone, client, line, output, session } = await greetedCall([say("We are Acme Co.")]);
+    phone.callerHungUp(CALL);
+    const printed = output();
+    const before = await session();
+
+    phone.callerSaid(CALL, "Who are you?");
+    phone.callerInterrupted(CALL);
+    phone.lineConnected(CALL);
+    phone.callArrived(CALL, NUMBER);
+    phone.callerHungUp(CALL);
+    await settled();
+
+    expect(client.requests).toHaveLength(1);
+    expect(line.saidOn(CALL)).toEqual([GREETING]);
+    expect(output()).toBe(printed);
+    expect(await session()).toEqual(before);
+  });
+});

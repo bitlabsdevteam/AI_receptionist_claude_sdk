@@ -70,6 +70,25 @@ export class PhoneCalls {
     call.work = call.work.then(() => this.#turn(call, utterance));
   }
 
+  /**
+   * The Caller talked over the Receptionist. It is only printed. The engine is told nothing, so the Call's transcript
+   * keeps the whole reply although the Caller heard part of it, and a Turn in flight still finishes and is said.
+   */
+  callerInterrupted(callId: string): void {
+    if (this.#calls.has(callId)) this.#write("(The Caller interrupted.)\n");
+  }
+
+  /**
+   * The Caller hung up, so the Call is over. A Turn in flight is left to finish in the engine, since nothing can
+   * cancel it, but its reply is said to nobody and no Turn starts after it.
+   */
+  callerHungUp(callId: string): void {
+    const call = this.#calls.get(callId);
+    if (!call) return;
+    this.#write("The Caller hung up.\n");
+    this.#forget(call);
+  }
+
   /** Says the greeting once it is ready and the line has connected, whichever comes later. */
   async #greet(call: PhoneCall, started: Promise<TurnResult>): Promise<void> {
     let greeting: TurnResult;
@@ -80,6 +99,7 @@ export class PhoneCalls {
       this.#forget(call);
       return;
     }
+    if (this.#isOver(call)) return;
     this.#say(call, greeting.reply);
   }
 
@@ -94,6 +114,7 @@ export class PhoneCalls {
       this.#write(`(The Receptionist could not answer: ${messageOf(error)})\n`);
       return;
     }
+    if (this.#isOver(call)) return;
     call.turns = turn;
     this.#say(call, result.reply);
   }
@@ -110,13 +131,18 @@ export class PhoneCalls {
     }
   }
 
+  /** Whether the Call is over: its Caller hung up, or it could not be opened. */
   #isOver(call: PhoneCall): boolean {
     return this.#calls.get(call.id) !== call;
   }
 
-  /** Drops what was kept for the Call. Only its id is remembered, so that a late report of its arrival opens nothing. */
+  /**
+   * Ends the Call for this adapter and drops what was kept for it. Only its id is remembered, so that a late report of
+   * its arrival opens nothing. A greeting still waiting for the line to connect is let go, to be said to nobody.
+   */
   #forget(call: PhoneCall): void {
     this.#calls.delete(call.id);
     this.#over.add(call.id);
+    call.connect();
   }
 }
