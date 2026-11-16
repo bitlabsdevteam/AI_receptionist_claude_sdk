@@ -1,40 +1,12 @@
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { recordClip, type RecorderProcess, type Spawner } from "../src/voice/recorder.js";
+import { recordClip, type Spawner } from "../src/voice/recorder.js";
 import { VoiceError, VoiceInterrupted } from "../src/voice/voice.js";
+import { fakeFfmpeg } from "./fake-ffmpeg.js";
 
 const CLIP = new Uint8Array([1, 2, 3, 4]);
-
-/** A scripted stand-in for ffmpeg: no process is started. It writes `clip` to the output path once told to stop. */
-function fakeFfmpeg(script: { clip?: Uint8Array; failWith?: Error; failOnStop?: Error } = {}) {
-  const calls: Array<{ command: string; args: string[] }> = [];
-  const events: string[] = [];
-  const spawn: Spawner = (command, args) => {
-    calls.push({ command, args });
-    events.push("start");
-    const output = args[args.length - 1]!;
-    let finish!: () => void;
-    let fail!: (error: Error) => void;
-    const done = new Promise<void>((resolve, reject) => {
-      finish = resolve;
-      fail = reject;
-    });
-    if (script.failWith) fail(script.failWith);
-    const process: RecorderProcess = {
-      done,
-      stop() {
-        events.push("stop");
-        if (script.failOnStop) return fail(script.failOnStop);
-        const write = script.clip ? writeFile(output, script.clip) : Promise.resolve();
-        void write.then(finish);
-      },
-    };
-    return process;
-  };
-  return { spawn, calls, events };
-}
 
 let parent: string;
 beforeEach(async () => {
@@ -91,6 +63,36 @@ describe("recordClip", () => {
     expect(error).toBeInstanceOf(VoiceError);
     expect((error as Error).message).toMatch(/ffmpeg/);
     expect((error as Error).message).toMatch(/brew install ffmpeg/);
+    expect(await leftovers()).toEqual([]);
+  });
+
+  it("calls off the wait for Enter when ffmpeg dies first, so the wait cannot swallow the Caller's next line", async () => {
+    let wait: AbortSignal | undefined;
+    const missing = Object.assign(new Error("spawn ffmpeg ENOENT"), { code: "ENOENT" });
+    await recordClip({
+      spawn: fakeFfmpeg({ failWith: missing }).spawn,
+      tempDir: parent,
+      waitForEnter: (signal) => {
+        wait = signal;
+        expect(signal.aborted).toBe(false);
+        return new Promise(() => {});
+      },
+    }).catch(() => {});
+
+    expect(wait?.aborted).toBe(true);
+  });
+
+  it("fails with one VoiceError, and leaves no stray rejection, when the wait for Enter throws at once after ffmpeg died", async () => {
+    // vitest fails the run on an unhandled rejection, which is what the dead recorder's `done` would otherwise become.
+    const error = await recordClip({
+      spawn: fakeFfmpeg({ failWith: new Error("ffmpeg exited with code 1") }).spawn,
+      tempDir: parent,
+      waitForEnter: () => {
+        throw new Error("the terminal is closed");
+      },
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(VoiceError);
+    expect((error as Error).message).toMatch(/the terminal is closed/);
     expect(await leftovers()).toEqual([]);
   });
 

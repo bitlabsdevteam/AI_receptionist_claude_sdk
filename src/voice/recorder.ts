@@ -17,8 +17,12 @@ export interface RecorderProcess {
 export type Spawner = (command: string, args: string[]) => RecorderProcess;
 
 export interface RecordOptions {
-  /** Resolves when the Caller presses Enter to stop. May reject with `VoiceInterrupted`. */
-  waitForEnter: () => Promise<void>;
+  /**
+   * Resolves when the Caller presses Enter to stop. May reject with `VoiceInterrupted`. `signal` aborts once the
+   * recording no longer waits (the recorder died first), so that a pending read can be called off before it swallows
+   * the Caller's next line.
+   */
+  waitForEnter: (signal: AbortSignal) => Promise<void>;
   spawn?: Spawner;
   /** Where the temp directory is made. Defaults to the OS temp directory. */
   tempDir?: string;
@@ -31,14 +35,16 @@ const MISSING_FFMPEG =
 
 /**
  * Records the Caller from the microphone until `waitForEnter` resolves, and returns the clip as 16 kHz mono 16-bit
- * WAV bytes (empty if ffmpeg wrote nothing). Recording starts at once: the adapter's Enter at its prompt is the
- * start, and the Enter awaited here is the stop. macOS only (avfoundation). The temp file is removed whatever
- * happens. Throws `VoiceError`; a missing `ffmpeg` names what to install.
+ * WAV bytes (empty if ffmpeg wrote nothing). ffmpeg is started at once: the adapter's Enter at its prompt is the
+ * start, and the Enter awaited here is the stop. Nothing here knows when ffmpeg has opened the microphone, which can
+ * take a moment, so words said straight away may be missed. macOS only (avfoundation). The temp file is removed
+ * whatever happens. Throws `VoiceError`; a missing `ffmpeg` names what to install.
  */
 export async function recordClip(options: RecordOptions): Promise<Uint8Array> {
   const { waitForEnter, spawn = spawnFfmpeg, tempDir = tmpdir(), input = ":default" } = options;
   const dir = await mkdtemp(join(tempDir, "receptionist-"));
   const file = join(dir, "clip.wav");
+  const waiting = new AbortController();
   let recorder: RecorderProcess | undefined;
   try {
     recorder = spawn("ffmpeg", [
@@ -48,7 +54,9 @@ export async function recordClip(options: RecordOptions): Promise<Uint8Array> {
     ]);
     // A recorder that dies early (no ffmpeg, no microphone permission) must not wait for Enter.
     const died = recorder.done.then(() => new Promise<never>(() => {}));
-    await Promise.race([waitForEnter(), died]);
+    // The race below is what reports a death. Should it never start, this keeps the rejection from going unhandled.
+    died.catch(() => {});
+    await Promise.race([waitForEnter(waiting.signal), died]);
     recorder.stop();
     await recorder.done;
     return await readClip(file);
@@ -59,6 +67,7 @@ export async function recordClip(options: RecordOptions): Promise<Uint8Array> {
     }
     throw asVoiceError(error);
   } finally {
+    waiting.abort();
     await rm(dir, { recursive: true, force: true });
   }
 }
