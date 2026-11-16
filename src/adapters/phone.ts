@@ -1,5 +1,6 @@
 import type { FlowEngine } from "../engine/engine.js";
 import type { TurnResult } from "../engine/turn.js";
+import { RecentSet } from "../recent-set.js";
 import { messageOf } from "./message-of.js";
 
 /**
@@ -28,6 +29,8 @@ export interface PhoneLine {
 
 /** How long a Call may last, from the moment the call arrived. */
 export const TIME_LIMIT_MS = 10 * 60 * 1000;
+/** How many ended Calls are remembered, by id, so that a late report about one is ignored. */
+export const REMEMBERED_OVER_CALLS = 5000;
 /** How long a closing may take, from the request to close with words, before the Call is hung up anyway. */
 export const CLOSING_STALL_MS = 30_000;
 
@@ -82,8 +85,8 @@ export class PhoneCalls {
   readonly #after: (ms: number, run: () => void) => () => void;
   /** The Calls whose Callers are on the line, by id. */
   readonly #calls = new Map<string, PhoneCall>();
-  /** The ids of the Calls that are over. Whatever the line still reports for one of them is ignored. */
-  readonly #over = new Set<string>();
+  /** The ids of the most recent Calls that are over. Whatever the line still reports for one of them is ignored. */
+  readonly #over = new RecentSet<string>(REMEMBERED_OVER_CALLS);
 
   /** `write` prints a line for whoever is at the terminal. It is plain output, not a Trace. */
   constructor(engine: FlowEngine, line: PhoneLine, write: (text: string) => void, options: PhoneOptions = {}) {
@@ -301,7 +304,7 @@ export function shownNumber(number: string | undefined): string {
 }
 
 /** Runs `run` after `ms` of real time. The timer does not keep the program alive. */
-function inRealTime(ms: number, run: () => void): () => void {
+export function inRealTime(ms: number, run: () => void): () => void {
   const timer = setTimeout(run, ms);
   timer.unref();
   return () => clearTimeout(timer);
