@@ -13,6 +13,13 @@ interface PhoneCall {
   /** Settles once the line has connected, which is when the Caller can first hear anything. */
   readonly connected: Promise<void>;
   readonly connect: () => void;
+  /** How many Turns the Call has had. The next Turn's id is the Call's id and the next number, such as `<callId>:1`. */
+  turns: number;
+  /**
+   * The Call's work so far, one piece after another: the greeting, then each Turn. Whatever the Caller says next is
+   * added to its end, so a Turn starts only when the greeting and every earlier Turn have been said.
+   */
+  work: Promise<void>;
 }
 
 /**
@@ -38,15 +45,30 @@ export class PhoneCalls {
     if (this.#calls.has(callId)) return;
     let connect!: () => void;
     const connected = new Promise<void>((resolve) => void (connect = resolve));
-    const call: PhoneCall = { id: callId, connected, connect };
-    this.#calls.set(callId, call);
     const number = callerNumber?.trim();
-    void this.#greet(call, this.#engine.start(callId, number ? { callerNumber: number } : {}));
+    const call: PhoneCall = { id: callId, connected, connect, turns: 0, work: Promise.resolve() };
+    this.#calls.set(callId, call);
+    call.work = this.#greet(call, this.#engine.start(callId, number ? { callerNumber: number } : {}));
   }
 
   /** The line connected: from now on the Caller hears what the line is asked to say. */
   lineConnected(callId: string): void {
     this.#calls.get(callId)?.connect();
+  }
+
+  /** The Caller finished saying something, which the line heard as `text`. */
+  callerSaid(callId: string, text: string): void {
+    const call = this.#calls.get(callId);
+    const utterance = text.trim();
+    // Nothing heard is not a Turn: it reaches nothing and spends no turn id.
+    if (!call || utterance === "") return;
+    call.work = call.work.then(() => this.#turn(call, utterance));
+  }
+
+  /** Runs one Turn and says its reply. */
+  async #turn(call: PhoneCall, utterance: string): Promise<void> {
+    const result = await this.#engine.handleUser(call.id, utterance, `${call.id}:${++call.turns}`);
+    this.#line.say(call.id, result.reply);
   }
 
   /** Says the greeting once it is ready and the line has connected, whichever comes later. */
