@@ -8,6 +8,8 @@ import { textFrame } from "../telnyx/frames.js";
 interface LineCall {
   readonly callControlId: string;
   socket: WebSocket | undefined;
+  /** Set when Telnyx said the call was answered. Until then no command that needs an answered call can be sent. */
+  answered: boolean;
   /** Set when the rules asked to close the Call with words. After that the line waits for the words to be spoken. */
   closing: boolean;
 }
@@ -41,7 +43,7 @@ export class TelnyxPhoneLine implements PhoneLine {
 
   /** A call arrived: from now on `callId` can be addressed. */
   open(callId: string, callControlId: string): void {
-    this.#calls.set(callId, { callControlId, socket: undefined, closing: false });
+    this.#calls.set(callId, { callControlId, socket: undefined, answered: false, closing: false });
   }
 
   has(callId: string): boolean {
@@ -58,9 +60,15 @@ export class TelnyxPhoneLine implements PhoneLine {
     return [...this.#calls.keys()];
   }
 
-  /** Whether the Call has joined its Relay connection, so it can be told things. */
-  hasRelay(callId: string): boolean {
-    return this.#calls.get(callId)?.socket !== undefined;
+  /** Telnyx said the call was answered. */
+  answered(callId: string): void {
+    const call = this.#calls.get(callId);
+    if (call) call.answered = true;
+  }
+
+  /** Whether the rules have asked to close the Call, so nothing new may be started on it. */
+  isClosing(callId: string): boolean {
+    return this.#calls.get(callId)?.closing === true;
   }
 
   /** The Call's Relay connection has joined. */
@@ -87,7 +95,10 @@ export class TelnyxPhoneLine implements PhoneLine {
     const call = this.#calls.get(callId);
     if (!call) throw new Error("the Call is not on the line");
     call.closing = true;
-    void this.#speakAndWait(call, text);
+    // The docs have `answer` come before any other command on an incoming call, so a Call that was not answered yet has
+    // no one to speak to: it is hung up without words, and its `call.hangup` event ends it.
+    if (call.answered) void this.#speakAndWait(call, text);
+    else void this.#hangup(call);
   }
 
   hangUp(callId: string): void {

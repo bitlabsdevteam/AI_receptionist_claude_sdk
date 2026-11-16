@@ -6,10 +6,11 @@ import { RELAY_PATH, WEBHOOK_PATH, type PhoneConfig } from "../phone-config.js";
 import type { TelnyxClient } from "../telnyx/client.js";
 import { parseWebhookEvent, type CallArrived, type TelnyxEvent } from "../telnyx/events.js";
 import { parseRelayFrame } from "../telnyx/frames.js";
+import { RecentSet } from "../recent-set.js";
 import { RelayTokens } from "../telnyx/relay-tokens.js";
 import { checkWebhookSignature } from "../telnyx/signature.js";
 import { messageOf } from "./message-of.js";
-import { PhoneCalls, shownNumber, type PhoneOptions } from "./phone.js";
+import { inRealTime, PhoneCalls, REMEMBERED_OVER_CALLS, shownNumber, type PhoneLine, type PhoneOptions } from "./phone.js";
 import { TelnyxPhoneLine } from "./telnyx-phone-line.js";
 
 /** A webhook body is a few KB. A body past this is refused without being read to the end. */
@@ -18,6 +19,8 @@ const MAX_BODY_BYTES = 1 << 20;
 const REMEMBERED_EVENTS = 5000;
 /** The most a frame on the Relay connection may hold. */
 const MAX_FRAME_BYTES = 1 << 20;
+/** How long a Relay connection with a good token may take to send its `setup`, before it is closed. */
+export const RELAY_SETUP_TIMEOUT_MS = 10_000;
 
 export interface PhoneServerOptions {
   config: PhoneConfig;
@@ -54,14 +57,27 @@ export async function startPhoneServer(options: PhoneServerOptions, listenOn = o
   const { config, client, write } = options;
   const now = options.now ?? Date.now;
   const tokens = new RelayTokens(now);
+  const after = options.rules?.after ?? inRealTime;
   const line = new TelnyxPhoneLine(client, config, write);
-  const phone = new PhoneCalls(options.engine, line, write, options.rules);
+  // The rules hang up on their own when a closing stalls, and Telnyx may never say so: that Call is let go of here.
+  const releasing: PhoneLine = {
+    say: (callId, text) => line.say(callId, text),
+    closeWith: (callId, text) => line.closeWith(callId, text),
+    hangUp(callId) {
+      line.hangUp(callId);
+      finish(callId);
+    },
+  };
+  const phone = new PhoneCalls(options.engine, releasing, write, options.rules);
 
-  /** Calls known to be over, so a late event cannot bring one back. Only ids are kept. */
-  const over = new Set<string>();
+  /** The most recent Calls known to be over, so a late event cannot bring one back. Only ids are kept. */
+  const over = new RecentSet<string>(REMEMBERED_OVER_CALLS);
   /** The Calls that have been told to start the Relay. */
   const relayStarted = new Set<string>();
-  const seenEvents = new Set<string>();
+  /** The ids of the most recent events that were handled without failing. */
+  const seenEvents = new RecentSet<string>(REMEMBERED_EVENTS);
+  /** The ids of the events being handled now. A repeat of one of these is ignored, though it is not seen yet. */
+  const handling = new Set<string>();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
   const sockets = new Set<WebSocket>();
 
@@ -71,13 +87,6 @@ export async function startPhoneServer(options: PhoneServerOptions, listenOn = o
     relayStarted.delete(callId);
     tokens.forget(callId);
     line.close(callId);
-  }
-
-  function remembered(eventId: string): boolean {
-    if (seenEvents.has(eventId)) return true;
-    seenEvents.add(eventId);
-    if (seenEvents.size > REMEMBERED_EVENTS) seenEvents.delete(seenEvents.values().next().value!);
-    return false;
   }
 
   async function onArrived(event: CallArrived): Promise<void> {
@@ -112,7 +121,10 @@ export async function startPhoneServer(options: PhoneServerOptions, listenOn = o
   async function onAnswered(callId: string): Promise<void> {
     const callControlId = line.callControlIdOf(callId);
     if (callControlId === undefined) return write("(Ignored an answered event for an unknown Call.)\n");
+    // The rules may have closed the Call before Telnyx said it was answered: a Relay must not start on a closing.
+    if (line.isClosing(callId)) return write("(Ignored an answered event: the Call is being closed.)\n");
     if (relayStarted.has(callId)) return write("(Ignored an answered event: the Call already has a Relay.)\n");
+    line.answered(callId);
     relayStarted.add(callId);
     const token = tokens.issue(callId);
     try {
@@ -129,11 +141,24 @@ export async function startPhoneServer(options: PhoneServerOptions, listenOn = o
     }
   }
 
+  /**
+   * Handles one event once. Its id counts as seen only when handling did not throw, so that Telnyx's retry of an event
+   * that failed is handled, while a repeat of one that succeeded, or is still being handled, is ignored.
+   */
   async function onEvent(event: TelnyxEvent): Promise<void> {
     if (event.kind === "malformed") return write(`(Ignored a webhook: ${event.reason}.)\n`);
     if (event.kind === "ignored") return;
-    if (remembered(event.eventId)) return write("(Ignored a repeated event.)\n");
+    if (seenEvents.has(event.eventId) || handling.has(event.eventId)) return write("(Ignored a repeated event.)\n");
+    handling.add(event.eventId);
+    try {
+      await handle(event);
+      seenEvents.add(event.eventId);
+    } finally {
+      handling.delete(event.eventId);
+    }
+  }
 
+  async function handle(event: Exclude<TelnyxEvent, { kind: "malformed" | "ignored" }>): Promise<void> {
     switch (event.kind) {
       case "arrived":
         return onArrived(event);
@@ -235,8 +260,15 @@ export async function startPhoneServer(options: PhoneServerOptions, listenOn = o
   function joinRelay(ws: WebSocket, callId: string): void {
     sockets.add(ws);
     let joined = false;
+    // A connection that never sends its setup is closed, which closes the Call the same way a bad setup does.
+    const cancelWait = after(RELAY_SETUP_TIMEOUT_MS, () => {
+      if (joined) return;
+      write("Closed a Relay connection: it sent no setup in time.\n");
+      ws.close(1008, "no setup");
+    });
     ws.on("error", () => undefined);
     ws.on("close", () => {
+      cancelWait();
       sockets.delete(ws);
       // The rules ignore this for a Call that is being closed or is over, as it is when we hang up.
       phone.connectionLost(callId);
@@ -251,6 +283,7 @@ export async function startPhoneServer(options: PhoneServerOptions, listenOn = o
           return;
         }
         joined = true;
+        cancelWait();
         line.attach(callId, ws);
         phone.lineConnected(callId);
         return;
