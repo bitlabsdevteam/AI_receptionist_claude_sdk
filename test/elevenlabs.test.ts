@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, readdirSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { requireTalkConfig } from "../src/config.js";
 import { DEFAULT_MODEL_ID, DEFAULT_STT_MODEL_ID, ElevenLabsVoice } from "../src/voice/elevenlabs.js";
 import type { Player } from "../src/voice/player.js";
 import { recordClip } from "../src/voice/recorder.js";
@@ -550,6 +551,25 @@ describe("ElevenLabsVoice.fromEnv", () => {
       "https://api.elevenlabs.io",
       "https://api.elevenlabs.io",
     ]);
+  });
+
+  it("names every missing variable at once, in the same words as the startup check of `npm run talk`", () => {
+    const messageOf = (check: () => unknown): string => {
+      try {
+        check();
+      } catch (error) {
+        return (error as Error).message;
+      }
+      throw new Error("expected the check to fail");
+    };
+
+    const message = messageOf(() => ElevenLabsVoice.fromEnv({}));
+
+    const lines = message.split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("ELEVENLABS_API_KEY is not set");
+    expect(lines[1]).toContain("ELEVENLABS_VOICE_ID is not set");
+    expect(message).toBe(messageOf(() => requireTalkConfig({ ANTHROPIC_API_KEY: "sk-ant-real" })));
   });
 
   it("names the missing variable, and treats a blank value as missing", () => {

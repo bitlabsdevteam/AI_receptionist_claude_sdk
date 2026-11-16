@@ -1,3 +1,4 @@
+import { readElevenLabsEnv, type ElevenLabsEnv } from "./elevenlabs-env.js";
 import { afplayPlayer, playBytes, type Player } from "./player.js";
 import type { Recorder } from "./recorder.js";
 import { VoiceError, type Voice } from "./voice.js";
@@ -16,15 +17,11 @@ const DEFAULT_BASE_URL = "https://api.elevenlabs.io";
 const OUTPUT_FORMAT = "mp3_44100_128";
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-export interface ElevenLabsConfig {
-  apiKey: string;
-  voiceId: string;
-  /** Text-to-speech model. Defaults to `DEFAULT_MODEL_ID`. */
-  modelId?: string | undefined;
-  /** Speech-to-text model. Defaults to `DEFAULT_STT_MODEL_ID`. */
-  sttModelId?: string | undefined;
-  /** API host, for the regional endpoints. */
-  baseUrl?: string;
+/**
+ * What an `ElevenLabsVoice` is made with. `modelId` (text-to-speech) defaults to `DEFAULT_MODEL_ID`, `sttModelId`
+ * (speech-to-text) to `DEFAULT_STT_MODEL_ID`, and `baseUrl` to the global API host.
+ */
+export interface ElevenLabsConfig extends ElevenLabsEnv {
   /** Give up on the request after this long. */
   timeoutMs?: number;
   /** HTTP client. Defaults to the global `fetch`. */
@@ -37,7 +34,6 @@ export interface ElevenLabsConfig {
   recorder?: Recorder;
 }
 
-type Environment = Record<string, string | undefined>;
 type Injected = Pick<ElevenLabsConfig, "baseUrl" | "timeoutMs" | "fetch" | "player" | "tmpDir" | "recorder">;
 
 /**
@@ -54,19 +50,12 @@ export class ElevenLabsVoice implements Voice {
   }
 
   /**
-   * Reads `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` (required), and `ELEVENLABS_MODEL_ID`,
-   * `ELEVENLABS_STT_MODEL_ID` and `ELEVENLABS_BASE_URL` (optional). The recorder is not in the environment: pass it in
-   * `injected`, which wins over the environment.
+   * A Voice set up from the environment, as `readElevenLabsEnv` reads it. Throws a `VoiceError` naming every required
+   * variable that is missing. The recorder is not in the environment: pass it in `injected`, which wins over the
+   * environment.
    */
-  static fromEnv(env: Environment = process.env, injected: Injected = {}): ElevenLabsVoice {
-    const apiKey = env.ELEVENLABS_API_KEY?.trim();
-    const voiceId = env.ELEVENLABS_VOICE_ID?.trim();
-    if (!apiKey) throw new VoiceError("ELEVENLABS_API_KEY is not set. Put your ElevenLabs API key in .env or the environment.");
-    if (!voiceId) throw new VoiceError("ELEVENLABS_VOICE_ID is not set. Put the id of the ElevenLabs voice to use in .env or the environment.");
-    const modelId = env.ELEVENLABS_MODEL_ID?.trim() || undefined;
-    const sttModelId = env.ELEVENLABS_STT_MODEL_ID?.trim() || undefined;
-    const baseUrl = env.ELEVENLABS_BASE_URL?.trim();
-    return new ElevenLabsVoice({ apiKey, voiceId, modelId, sttModelId, ...(baseUrl ? { baseUrl } : {}), ...injected });
+  static fromEnv(env: NodeJS.ProcessEnv = process.env, injected: Injected = {}): ElevenLabsVoice {
+    return new ElevenLabsVoice({ ...readElevenLabsEnv(env), ...injected });
   }
 
   async speak(text: string): Promise<void> {

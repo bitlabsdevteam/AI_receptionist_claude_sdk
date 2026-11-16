@@ -455,7 +455,7 @@ receptionist/
 │   ├── flow/               # schema.ts (Zod + cross-reference checks), load.ts
 │   ├── engine/             # engine.ts, run-node.ts, model.ts, anthropic-client.ts,
 │   │                       # reply-stream.ts, session.ts, templating.ts, turn.ts
-│   ├── voice/              # voice.ts (the Voice interface), elevenlabs.ts,
+│   ├── voice/              # voice.ts (the Voice interface), elevenlabs.ts, elevenlabs-env.ts,
 │   │                       # player.ts (afplay), recorder.ts (ffmpeg), wav.ts
 │   └── adapters/           # chat.ts, cli.ts, terminal-reply.ts (terminal chat);
 │                           # talk.ts, talk-terminal.ts, talk-cli.ts, line-queue.ts (spoken Call)
