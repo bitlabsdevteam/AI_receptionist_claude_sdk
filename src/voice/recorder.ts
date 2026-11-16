@@ -38,7 +38,10 @@ export interface RecordOptions {
 /** The avfoundation input that is the default microphone. */
 const MICROPHONE = ":default";
 
-/** Stopping takes ffmpeg a moment, and has been seen to take seconds. Past this it is not going to stop. */
+/**
+ * Stopping takes ffmpeg a moment, and one recording was seen to spend seconds starting or stopping. Past this it is
+ * not going to stop.
+ */
 const STOP_GRACE_MS = 10_000;
 
 const MISSING_FFMPEG =

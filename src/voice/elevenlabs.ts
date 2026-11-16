@@ -22,7 +22,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
  * `sttModelId` (speech-to-text) to `DEFAULT_STT_MODEL_ID`, and `baseUrl` to the global API host.
  */
 export interface ElevenLabsConfig extends ElevenLabsEnv {
-  /** Give up on the request after this long. */
+  /** Give up on the request, the arrival of its body included, after this long in ms. Defaults to 30 s. */
   timeoutMs?: number;
   /** HTTP client. Defaults to the global `fetch`. */
   fetch?: typeof globalThis.fetch;
