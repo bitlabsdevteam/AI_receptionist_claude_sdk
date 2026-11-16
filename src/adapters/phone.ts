@@ -9,6 +9,11 @@ export interface PhoneLine {
    * be spoken. Words cannot be taken back once handed over, so only a finished reply is ever passed.
    */
   say(callId: string, text: string): void;
+  /**
+   * Closes the Call with these words: the line stops listening, speaks `text` once, waits until it has been spoken
+   * and hangs up. It returns at once. The line reports that the words were spoken by calling `closingSpoken`.
+   */
+  closeWith(callId: string, text: string): void;
 }
 
 export interface PhoneOptions {
@@ -24,6 +29,8 @@ interface PhoneCall {
   readonly connect: () => void;
   /** How many Turns the Call has had. The next Turn's id is the Call's id and the next number, such as `<callId>:1`. */
   turns: number;
+  /** Whether the Call is being closed from our side. Nothing more is said on it and no Turn starts. */
+  closing: boolean;
   /**
    * The Call's work so far, one piece after another: the greeting, then each Turn. Whatever the Caller says next is
    * added to its end, so a Turn starts only when the greeting and every earlier Turn have been said. It never rejects.
@@ -67,7 +74,7 @@ export class PhoneCalls {
     let connect!: () => void;
     const connected = new Promise<void>((resolve) => void (connect = resolve));
     const number = callerNumber?.trim();
-    const call: PhoneCall = { id: callId, connected, connect, turns: 0, work: Promise.resolve() };
+    const call: PhoneCall = { id: callId, connected, connect, turns: 0, closing: false, work: Promise.resolve() };
     this.#calls.set(callId, call);
     this.#write(`Call arrived from ${shownNumber(number)}.\n`);
     call.work = this.#greet(call, this.#engine.start(callId, number ? { callerNumber: number } : {}));
@@ -83,7 +90,7 @@ export class PhoneCalls {
     const call = this.#calls.get(callId);
     const utterance = text.trim();
     // Nothing heard is not a Turn: it reaches nothing and spends no turn id.
-    if (!call || utterance === "") return;
+    if (!call || call.closing || utterance === "") return;
     const heard = this.#now();
     call.work = call.work.then(() => this.#turn(call, utterance, heard));
   }
@@ -139,6 +146,12 @@ export class PhoneCalls {
     }
     if (this.#isOver(call)) return;
     call.turns = turn;
+    // An ending Turn's reply, the End state's message included, is the Call's last words and is not said the normal way.
+    if (result.ended) {
+      this.#close(call, result.reply);
+      this.#write(`(Timing: reply ${Math.round(this.#now() - heard)} ms)\n`);
+      return;
+    }
     if (this.#say(call, result.reply)) this.#write(`(Timing: reply ${Math.round(this.#now() - heard)} ms)\n`);
   }
 
@@ -158,9 +171,20 @@ export class PhoneCalls {
     }
   }
 
-  /** Whether the Call is over: its Caller hung up, or it could not be opened. */
+  /**
+   * Closes the Call from our side with these words, once: the line is asked to speak them and hang up. A Call that is
+   * being closed or is over is left alone, so the first reason to close a Call is the only one.
+   */
+  #close(call: PhoneCall, text: string): void {
+    if (this.#isOver(call)) return;
+    call.closing = true;
+    this.#write(`Receptionist: ${text}\n`);
+    this.#line.closeWith(call.id, text);
+  }
+
+  /** Whether nothing more may be said on the Call: its Caller hung up, it could not be opened, or it is being closed. */
   #isOver(call: PhoneCall): boolean {
-    return this.#calls.get(call.id) !== call;
+    return call.closing || this.#calls.get(call.id) !== call;
   }
 
   /**

@@ -7,7 +7,8 @@ import type { ModelResponse } from "../src/engine/model.js";
 import { InMemorySessionStore } from "../src/engine/session.js";
 import { loadFlow } from "../src/flow/load.js";
 import type { Flow } from "../src/flow/schema.js";
-import { FakeClaude, GREETING, failAfter, flowWithBilling, reply, say, transition, type ScriptedFailure } from "./fake-claude.js";
+import { FakeClaude, GOODBYE_MESSAGE, GREETING, failAfter, goodbye, flowWithBilling, reply, say, transition, type ScriptedFailure } from "./fake-claude.js";
+import { FakeClock } from "./fake-clock.js";
 import { FakePhoneLine, settled } from "./fake-phone-line.js";
 
 let flow: Flow;
@@ -20,13 +21,21 @@ const CALL = "call-1";
 const NUMBER = "+15551234567";
 
 /** The phone Channel on a scripted model and a fake line, with everything it printed. */
-function phoneWith(script: (ModelResponse | ScriptedFailure)[], callFlow: Flow = flow, clock?: () => number) {
+function phoneWith(
+  script: (ModelResponse | ScriptedFailure)[],
+  callFlow: Flow = flow,
+  clock?: () => number,
+  after?: (ms: number, run: () => void) => () => void,
+) {
   const client = new FakeClaude(script);
   const store = new InMemorySessionStore();
   const engine = new FlowEngine(callFlow, { client, store });
   const line = new FakePhoneLine();
   const writes: string[] = [];
-  const phone = new PhoneCalls(engine, line, (text) => void writes.push(text), clock ? { clock } : {});
+  const phone = new PhoneCalls(engine, line, (text) => void writes.push(text), {
+    ...(clock ? { clock } : {}),
+    ...(after ? { after } : {}),
+  });
   return { client, line, phone, output: () => writes.join(""), session: (callId: string = CALL) => store.get(callId) };
 }
 
@@ -665,6 +674,50 @@ describe("what is printed", () => {
     expect(output().match(/\(Timing: /g)).toHaveLength(1);
     expect(output()).toContain("Receptionist: We are Acme Co.\n(Timing: reply 450 ms)\n");
     expect(output().endsWith("Receptionist: Happy to help.\n(Could not say the reply: the line is busy)\n")).toBe(true);
+  });
+});
+
+describe("an ending Turn", () => {
+  it("closes the line with the whole reply, once, and does not say it the normal way", async () => {
+    const { phone, line } = await greetedCall([goodbye("Happy to help.")]);
+
+    phone.callerSaid(CALL, "Goodbye");
+    await settled();
+
+    expect(line.closed).toEqual([{ callId: CALL, text: `Happy to help. ${GOODBYE_MESSAGE}` }]);
+    expect(line.saidOn(CALL)).toEqual([GREETING]);
+  });
+
+  it("speaks the End state's message exactly once, even when the model said nothing of its own", async () => {
+    const { phone, line, session } = await greetedCall([goodbye()]);
+
+    phone.callerSaid(CALL, "Goodbye");
+    await settled();
+
+    expect(line.closed).toEqual([{ callId: CALL, text: GOODBYE_MESSAGE }]);
+    const spoken = [...line.saidOn(CALL), ...line.closed.map((closed) => closed.text)].join(" ");
+    expect(spoken.split(GOODBYE_MESSAGE)).toHaveLength(2);
+    expect((await session())?.endState).toBe("goodbye");
+  });
+
+  it("starts no Turn after it, including one that was waiting behind it, and says nothing more", async () => {
+    const { phone, client, line, session } = phoneWith([say(GREETING), goodbye(), say("Nine to five.")]);
+    const model = holdModel(client);
+    phone.callArrived(CALL, NUMBER);
+    phone.lineConnected(CALL);
+    await model.answer();
+    phone.callerSaid(CALL, "Goodbye");
+    phone.callerSaid(CALL, "And your hours?");
+    await settled();
+
+    await model.answer();
+    phone.callerSaid(CALL, "Hello?");
+    await settled();
+
+    expect(model.asked()).toBe(2);
+    expect(line.closed).toHaveLength(1);
+    expect(line.saidOn(CALL)).toEqual([GREETING]);
+    expect(Object.keys((await session())?.turns ?? {})).toEqual(["call-1:1"]);
   });
 });
 
