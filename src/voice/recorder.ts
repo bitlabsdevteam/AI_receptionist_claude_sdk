@@ -30,11 +30,12 @@ export interface RecordOptions {
   spawn?: Spawner;
   /** Where the temp directory is made. Defaults to the OS temp directory. */
   tempDir?: string;
-  /** The avfoundation input, `:default` being the default microphone. */
-  input?: string;
   /** How long the recorder gets to finish the file once told to stop, in ms, before it is killed. */
   stopGraceMs?: number;
 }
+
+/** The avfoundation input that is the default microphone. */
+const MICROPHONE = ":default";
 
 /** Stopping takes ffmpeg a moment, and has been seen to take seconds. Past this it is not going to stop. */
 const STOP_GRACE_MS = 10_000;
@@ -51,7 +52,7 @@ const MISSING_FFMPEG =
  * `VoiceError`; a missing `ffmpeg` names what to install.
  */
 export async function recordClip(options: RecordOptions): Promise<Uint8Array> {
-  const { waitForEnter, spawn = spawnFfmpeg, tempDir = tmpdir(), input = ":default", stopGraceMs = STOP_GRACE_MS } = options;
+  const { waitForEnter, spawn = spawnFfmpeg, tempDir = tmpdir(), stopGraceMs = STOP_GRACE_MS } = options;
   const dir = await mkdtemp(join(tempDir, "receptionist-"));
   const file = join(dir, "clip.wav");
   const waiting = new AbortController();
@@ -62,7 +63,7 @@ export async function recordClip(options: RecordOptions): Promise<Uint8Array> {
   try {
     recorder = spawn("ffmpeg", [
       ...["-hide_banner", "-loglevel", "error"],
-      ...["-f", "avfoundation", "-i", input],
+      ...["-f", "avfoundation", "-i", MICROPHONE],
       ...["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-y", file],
     ]);
     // A recorder that dies early (no ffmpeg, no microphone permission) must not wait for Enter.

@@ -13,13 +13,13 @@ export const afplayPlayer: Player = (path) =>
   });
 
 /**
- * Writes `bytes` to a fresh temp file under `dir`, plays it, and deletes it afterwards, also when playing fails.
+ * Writes the mp3 in `bytes` to a fresh temp file under `dir`, plays it, and deletes it afterwards, also when playing fails.
  * Each call gets its own directory, so nothing is left behind and calls never collide.
  */
-export async function playBytes(bytes: Uint8Array, player: Player, dir: string = tmpdir(), extension = ".mp3"): Promise<void> {
+export async function playBytes(bytes: Uint8Array, player: Player, dir: string = tmpdir()): Promise<void> {
   const own = await mkdtemp(join(dir, "receptionist-voice-"));
   try {
-    const path = join(own, `speech${extension}`);
+    const path = join(own, "speech.mp3");
     await writeFile(path, bytes);
     await player(path);
   } finally {
