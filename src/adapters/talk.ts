@@ -68,7 +68,7 @@ export async function runTalk(engine: FlowEngine, voice: Voice, io: ChatIO, opti
         else steps.push(["record", recorded - started], ["transcribe", heard - recorded]);
       } catch (error) {
         if (error instanceof VoiceInterrupted) return "interrupted";
-        io.write(`(Could not hear you: ${messageOf(error)}. Please try again.)\n`);
+        io.write(`(Could not hear you: ${reasonOf(error)}. Please try again.)\n`);
         turn--;
         continue;
       }
@@ -91,7 +91,7 @@ export async function runTalk(engine: FlowEngine, voice: Voice, io: ChatIO, opti
       if (result.ended) return "ended";
     } catch (error) {
       reply.end();
-      io.write(`(The Receptionist could not answer: ${messageOf(error)}. Please try again.)\n`);
+      io.write(`(The Receptionist could not answer: ${reasonOf(error)}. Please try again.)\n`);
       turn--;
     }
   }
@@ -107,6 +107,11 @@ type Step = [name: string, ms: number];
  */
 function timingLine(steps: Step[]): string {
   return `(Timing: ${steps.map(([name, ms]) => `${name} ${Math.round(ms)} ms`).join(", ")})`;
+}
+
+/** The error's message without a closing full stop, to go in the middle of a sentence. */
+function reasonOf(error: unknown): string {
+  return messageOf(error).replace(/\.$/, "");
 }
 
 function messageOf(error: unknown): string {

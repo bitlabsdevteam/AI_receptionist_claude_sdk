@@ -211,6 +211,15 @@ describe("when the Voice cannot listen", () => {
     expect(result).toBe("input-closed");
   });
 
+  it("does not double the full stop of a reason that is already a sentence", async () => {
+    const { engine, voice } = call([say(GREETING)], [new VoiceError("Recording needs ffmpeg. Install it, then try again.")]);
+    const { io, output } = terminal([""]);
+
+    await runTalk(engine, voice, io);
+
+    expect(output()).toContain("(Could not hear you: Recording needs ffmpeg. Install it, then try again. Please try again.)\n");
+  });
+
   it("ends the Call when the Caller interrupts", async () => {
     const { engine, voice, client } = call([say(GREETING)], [new VoiceInterrupted()]);
 
