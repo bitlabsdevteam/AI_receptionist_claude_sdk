@@ -238,6 +238,20 @@ describe("the talk program", () => {
     expect(result.stdout).toContain("Ava: Thank you for calling. Goodbye.\n");
   });
 
+  it("stops recording and ends the Call when the input closes mid-recording, sending nothing", async () => {
+    fake = await startFakeServices("never heard");
+    fakeAfplay();
+    fakeFfmpeg(wavClip(500));
+
+    const result = await runProgram("\n", servicesEnv(fake));
+
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe(`Ava: ${GREETING}\n${PROMPT}\n${RECORDING}\n`);
+    expect(fake.uploads).toHaveLength(0);
+    expect(fake.model).toHaveLength(1);
+  });
+
   it("does not let a recording that failed swallow the Caller's next line", async () => {
     fake = await startFakeServices();
     fakeAfplay();
