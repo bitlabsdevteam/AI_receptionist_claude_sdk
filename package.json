@@ -10,6 +10,7 @@
   "scripts": {
     "chat": "tsx src/adapters/cli.ts",
     "talk": "tsx src/adapters/talk-cli.ts",
+    "phone": "tsx src/adapters/phone-cli.ts",
     "test": "vitest run",
     "test:live": "RUN_LIVE=1 vitest run test/live.test.ts test/live-voice.test.ts",
     "typecheck": "tsc --noEmit"
