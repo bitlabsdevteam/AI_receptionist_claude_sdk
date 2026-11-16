@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -11,6 +12,9 @@ import { describe, expect, it } from "vitest";
  * Both keys are passed as empty. An empty variable in the environment wins over `.env`, so even on a machine with real
  * keys, and even if the gate were broken, the child cannot make a request that spends money.
  */
+/** The checkout this file is in. The scripts are run there, wherever vitest itself was started from. */
+const PROJECT = fileURLToPath(new URL("..", import.meta.url));
+
 const NO_KEYS = { PATH: process.env.PATH ?? "", ANTHROPIC_API_KEY: "", ELEVENLABS_API_KEY: "" };
 
 interface Check {
@@ -24,6 +28,7 @@ function voiceChecks(script: "test" | "test:live", ...args: string[]): { exitCod
   try {
     const report = join(dir, "report.json");
     const result = spawnSync("npm", ["run", script, "--", ...args, "--reporter=json", `--outputFile=${report}`], {
+      cwd: PROJECT,
       env: NO_KEYS,
       encoding: "utf8",
       timeout: 60_000,
