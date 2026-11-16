@@ -20,6 +20,11 @@ function anthropicKey(env: NodeJS.ProcessEnv): string | undefined {
   return key && key !== PLACEHOLDER_KEY ? key : undefined;
 }
 
+/** The line that says the Anthropic key is not set, or undefined when it is. For programs that list every problem at once. */
+export function anthropicKeyProblem(env: NodeJS.ProcessEnv): string | undefined {
+  return anthropicKey(env) ? undefined : ANTHROPIC_KEY_NOT_SET;
+}
+
 /** The Anthropic API key from the environment, or a `ConfigError` saying how to set it. */
 export function requireApiKey(env: NodeJS.ProcessEnv): string {
   const key = anthropicKey(env);
