@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Status** | Draft v0.2. The skeleton (tickets #1–#6) is built and under review in PR #7. Everything marked **Planned** below is not built. |
-| **Date** | 2026-11-14 |
+| **Status** | Draft v0.2. The skeleton (tickets #1–#6, merged in PR #7) and a spoken Call in the terminal (#8, §8.6 Option C) are built. Everything marked **Planned** below is not built. |
+| **Date** | 2026-11-16 |
 | **Language / runtime** | TypeScript on Node.js 24+ |
-| **Built today** | One `start` Node, a `goodbye` End state, terminal chat on Sonnet 5.5, offline test suite |
+| **Built today** | One `start` Node, a `goodbye` End state, terminal chat on Sonnet 5.5, a spoken Call in the terminal with an ElevenLabs Voice (§8.6 Option C), offline test suite. Nothing has run against the real Anthropic or ElevenLabs APIs. |
 | **Next scope** | `verify` Node + SQLite, traces, an evaluation harness, then a Telnyx voice adapter |
 
 ---
@@ -42,7 +42,7 @@ The first Flow has two Nodes:
 - G2. Per-Node model selection. Sonnet 5.5 is the default, and any Node can switch to an OpenRouter model.
 - G3. The verify Node checks identity against SQLite. The pass/fail decision is made by code, never by the LLM.
 - G4. The harness is testable offline with a scripted fake model client.
-- G5. **Voice is the target channel.** The engine knows nothing about channels. A terminal chat exists first as a development tool, and the Telnyx voice adapter is the first real channel (§8.6).
+- G5. **Voice is the target channel.** The engine knows nothing about channels. A terminal chat and a spoken Call in the terminal (§8.6 Option C) exist first as development tools, and the Telnyx voice adapter is the first real channel (§8.6).
 - G6. **Guards.** Rules about identity, Edges, End states and replies are enforced by code and hold whatever the model outputs (§8.3).
 - G7. **Traces.** Every Turn produces a structured, PII-redacted record of what the harness did (§8.4).
 - G8. **Evaluation.** Behaviour is measured with Scenarios, including a simulated Caller against the real model, with a regression gate (§8.5). A bad Trace can become a new Scenario.
@@ -114,7 +114,7 @@ The first Flow has two Nodes:
 | **Guards** | Named, code-enforced rules on Edges, tools and replies. | **Partly built** (Edge and reply guards for refusals, empty replies and End states). The verify guards are **Planned** (§8.3). |
 | **Traces** | A structured record per Turn: hops, latency, tokens, stop reasons, Edges taken, Guard decisions. | **Planned** (§8.4). Nothing logs today. |
 | **Evaluation harness** | Scenario suites, a simulated Caller, a grader, a regression gate. | Offline scripted suites **built**. The rest **Planned** (§8.5). |
-| **Channels** | Adapters that turn a channel event into `start()` / `handleUser()`. | Terminal **built**. HTTP and Telnyx **Planned** (§8.6). |
+| **Channels** | Adapters that turn a channel event into `start()` / `handleUser()`. | Terminal chat **built**. A spoken Call in the terminal **built** (§8.6 Option C: `src/adapters/talk.ts`, with an ElevenLabs Voice in `src/voice/`), never run against the real ElevenLabs API. HTTP and Telnyx **Planned** (§8.6). |
 
 ### 4.2 Agent framework (Claude SDK)
 - Package: **`@anthropic-ai/sdk`** (TypeScript). The Messages API with tool use is the agent loop, and the harness owns everything around it. The SDK is called through `client.beta.messages.stream` because the refusal-fallback beta lives there.
@@ -412,13 +412,13 @@ Acceptance: a deliberately broken Flow (for example verify with its Guard remove
 
 ### 8.6 Voice channel (Telnyx)
 
-Voice is the target channel. The harness already treats a channel as an adapter around `start()` and `handleUser()`. **The choice of first adapter is still open (§15, Q4).**
+Voice is the target channel. The harness already treats a channel as an adapter around `start()` and `handleUser()`. Option C is **built** as a development tool, with ElevenLabs as the **Voice** (see "Option C as built" below). Nothing for Telnyx or HTTP is built, and **the choice of first phone adapter is still open (§15, Q4).**
 
 | Option | How it works | Trade-offs |
 |---|---|---|
 | **A. Telnyx TeXML webhooks** (recommended first) | Telnyx calls the server. The server returns `<Say>` and `<Gather input="speech">`, and Telnyx does speech recognition and synthesis. | Fastest to build and the engine fits as it is. One HTTP round trip per Turn, no streaming audio and no barge-in, so there is a pause between Turns. |
 | **B. Real-time media streaming** | A WebSocket carries live audio. Speech recognition and synthesis are our own choice. | Natural pacing and interruptions, but much more work and cost. Comes after A. |
-| **C. Local microphone and speaker** | Talk to the harness from a laptop with no phone line. | Useful for tuning the voice before spending on telephony. Optional. |
+| **C. Local microphone and speaker** (**built**, with ElevenLabs) | Talk to the harness from a laptop with no phone line. | Useful for tuning the voice before spending on telephony. Optional. |
 
 Requirements for Option A:
 - An HTTP server with one endpoint per TeXML event: inbound call (`start()`), speech gathered (`handleUser()`), no input, and a status callback that removes the Call's state.
@@ -428,6 +428,17 @@ Requirements for Option A:
 - A per-Turn latency budget (target: reply spoken within about 3 s p50 including an Edge hop), measured in Traces. If hops make dead air unacceptable, add a short spoken acknowledgement while the Turn runs.
 - Things to verify against Telnyx's docs before building, because they were noted as unverified: bare-number `<Dial>`, `speechTimeout` units, and whether `<Say>` accepts language and voice attributes.
 
+Option C as built (`npm run talk`, #8):
+
+- **What it is.** A spoken Call in the terminal. `src/adapters/talk.ts` (`runTalk`) is the adapter, and the engine is unchanged. The **Voice** is an interface (`src/voice/voice.ts`: `speak(text)` and `listen()`), and `ElevenLabsVoice` is the only real one. It calls ElevenLabs' text-to-speech and speech-to-text endpoints with plain `fetch`, plays the mp3 with macOS `afplay` and records the microphone with `ffmpeg`. There is no new dependency. ElevenLabs is not a tool the model can call, and this is not the ElevenLabs Agents platform.
+- **Speaking.** Only the Turn's final reply is spoken (`TurnResult.reply`, which includes an End state's message), once, after the Turn has finished. Nothing is spoken while text streams, because a stream may still be discarded (I6) and speech cannot be unspoken. The text is always printed as well.
+- **Listening.** Push-to-talk: Enter starts a recording and Enter stops it, then the clip is transcribed. A typed line is still accepted at the prompt.
+- **Failures stay in the adapter.** An empty or failed transcript is answered by the adapter, which asks again, so only non-empty text reaches `handleUser()`. A failure to speak prints one line and the Call carries on: it never changes the Turn's result, never ends the Call and is never fed to the model. These are adapter rules with their own offline tests, not numbered invariants (§8.1).
+- **Configuration.** `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID`, plus optional model and host variables (§10). They live in `.env`, not in the Flow.
+- **Timing.** After each Turn the adapter prints one line saying how long recording, transcribing, the model and speaking took, in ms. It is plain terminal output, not a Trace (§8.4). `speak` includes playing the whole reply, so it grows with the reply's length, and nothing measures when the reply starts to be heard. The line is therefore not a measurement of the latency target above.
+- **Never run for real.** `ElevenLabsVoice` is tested against canned HTTP, and `npm run talk` against stand-ins for both APIs, `afplay` and `ffmpeg`. Neither has run against the real ElevenLabs API, the opt-in live Voice check (`test/live-voice.test.ts`) has never run, and no spoken Call has been held.
+- **Not built.** Telnyx, an HTTP server, barge-in, silence detection, real-time audio streaming, speaking while text streams, and playback or recording on Windows or Linux.
+
 ## 9. Project layout
 
 Built:
@@ -435,7 +446,7 @@ Built:
 ```
 receptionist/
 ├── PRD.md  CLAUDE.md  GLOSSARY.md  docs/agents/
-├── package.json            # type: module, Node 24+; scripts: chat, test, test:live, typecheck
+├── package.json            # type: module, Node 24+; scripts: chat, talk, test, test:live, typecheck
 ├── tsconfig.json           # strict
 ├── .env.example
 ├── flows/receptionist.json
@@ -444,13 +455,17 @@ receptionist/
 │   ├── flow/               # schema.ts (Zod + cross-reference checks), load.ts
 │   ├── engine/             # engine.ts, run-node.ts, model.ts, anthropic-client.ts,
 │   │                       # reply-stream.ts, session.ts, templating.ts, turn.ts
-│   └── adapters/           # chat.ts, cli.ts, terminal-reply.ts
-└── test/                   # vitest, offline; fake-claude.ts, sse.ts, live.test.ts (opt-in)
+│   ├── voice/              # voice.ts (the Voice interface), elevenlabs.ts,
+│   │                       # player.ts (afplay), recorder.ts (ffmpeg)
+│   └── adapters/           # chat.ts, cli.ts, terminal-reply.ts (terminal chat);
+│                           # talk.ts, talk-cli.ts, line-queue.ts (spoken Call)
+└── test/                   # vitest, offline; fake-claude.ts, fake-voice.ts, fake-ffmpeg.ts, sse.ts, wav.ts,
+                            # live.test.ts and live-voice.test.ts (opt-in)
 ```
 
 Planned additions: `src/tools/` (registry, `verify-identity.ts`, `normalise.ts`), `src/guards/`, `src/db/` (connection, `schema.sql`, `seed.ts`, `repo.ts`), `src/trace/` (`TraceSink`, redaction), `src/eval/` (scenario runner, simulated Caller, judge, gate), `src/adapters/http.ts` and `texml.ts`, `scenarios/`, `traces/` (git-ignored), `data/` (git-ignored).
 
-Stack: Node 24+, TypeScript (strict), `@anthropic-ai/sdk`, `zod`, `vitest`, `tsx`. Planned: `better-sqlite3`, an HTTP framework (Hono or Fastify, decide at the voice milestone).
+Stack: Node 24+, TypeScript (strict), `@anthropic-ai/sdk`, `zod`, `vitest`, `tsx`. A spoken Call (`npm run talk`) also needs macOS for `afplay`, and `ffmpeg` installed. Neither is an npm dependency, and ElevenLabs is called with plain `fetch`. Planned: `better-sqlite3`, an HTTP framework (Hono or Fastify, decide at the voice milestone).
 
 ## 10. Configuration
 
@@ -458,6 +473,11 @@ Stack: Node 24+, TypeScript (strict), `@anthropic-ai/sdk`, `zod`, `vitest`, `tsx
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | Built | Anthropic provider (Sonnet 5.5). |
 | `FLOW_PATH` | No | Built | Flow file. Defaults to `flows/receptionist.json`. |
+| `ELEVENLABS_API_KEY` | For `npm run talk` only | Built | ElevenLabs key for the Voice: speech out and speech in. |
+| `ELEVENLABS_VOICE_ID` | For `npm run talk` only | Built | The ElevenLabs voice the Receptionist speaks with. |
+| `ELEVENLABS_MODEL_ID` | No | Built | Text-to-speech model. Defaults to `eleven_flash_v2_5`. |
+| `ELEVENLABS_STT_MODEL_ID` | No | Built | Speech-to-text model. Defaults to `scribe_v2`. |
+| `ELEVENLABS_BASE_URL` | No | Built | ElevenLabs API host. Defaults to `https://api.elevenlabs.io`. |
 | `OPENROUTER_API_KEY` | No | Planned | Enables `openrouter/...` models. |
 | `DB_PATH` | No | Planned | Defaults to `./data/receptionist.db`. |
 | `TRACE_DIR` | No | Planned | Defaults to `./traces`. |
@@ -475,7 +495,7 @@ Never commit keys. The Flow file never contains secrets.
 - FR4. `verify_identity` returns pass/fail per §6.1, with the attempt limit enforced in code. **Planned**
 - FR5. Entering the `verified` End state requires `session.variables.verified === true` (engine-enforced). **Planned**
 - FR6. Per-Node `model` override works for both `anthropic/` and `openrouter/` models. `anthropic/` **Built**. `openrouter/` **Planned**.
-- FR7. A terminal chat (**Built**) and an HTTP interface for the voice adapter (**Planned**).
+- FR7. A terminal chat (**Built**), a spoken Call in the terminal (**Built**, §8.6 Option C) and an HTTP interface for the voice adapter (**Planned**).
 - FR8. Every Turn is idempotent on `turnId`. **Built**
 - FR9. Every Turn writes a Trace per §8.4, with PII redacted. **Planned**
 - FR10. Guards per §8.3 are enforced and every decision appears in the Trace. **Planned**
@@ -499,6 +519,8 @@ Never commit keys. The Flow file never contains secrets.
 - **Tier 2, Trace replay (planned).** Deterministic engine regression from recorded Calls.
 - **Tier 3, live Scenarios (planned).** Per §8.5, opt-in, capped.
 - **Live smoke test (built, never run).** `test/live.test.ts`, gated behind `RUN_LIVE=1`, asserts facts that hold every run (name, no markdown, closing message once, stream equals reply).
+- **Voice tests (built).** `FakeVoice` scripts what is heard and records what is spoken, and covers the spoken Call's loop with `FakeClaude`. `ElevenLabsVoice` is exercised against canned HTTP responses with an injected player and recorder, and the recorder against a stand-in for `ffmpeg`. `npm run talk` is run as a whole program against a local server that stands in for Anthropic and ElevenLabs, with stand-ins for `afplay` and `ffmpeg`. No sound is played and no microphone is opened.
+- **Live Voice check (built, never run).** `test/live-voice.test.ts`, behind the same `RUN_LIVE=1` gate (`npm run test:live` runs both live files). One sentence is spoken to a player that keeps the mp3 instead of playing it, and that mp3 is then transcribed. An offline test proves that `npm test` skips it and that it stops on the missing-key message when there is no key.
 
 ## 13. Milestones
 
@@ -507,6 +529,7 @@ Never commit keys. The Flow file never contains secrets.
 | M0 | Scaffold, Flow schema and loader (#1) | Typecheck passes and the sample Flow validates | **Done** |
 | M1 | Engine, `FakeClaude`, greeting, Turns, goodbye End state (#2–#4) | S1, S8, S9 and S11 pass offline | **Done** |
 | M2 | Anthropic client, terminal chat, `CLAUDE.md` (#5, #6) | Works against canned streams | **Done** (live path not yet run) |
+| — | **Spoken Call in the terminal** (#8, §8.6 Option C, outside the numbered plan): the `Voice` interface, an ElevenLabs Voice, push-to-talk, `npm run talk` | Works against canned HTTP and stand-ins for `afplay` and `ffmpeg` | **Done** (live path not yet run, no spoken Call held) |
 | M3 | **First live run.** Run `npm run chat` and `npm run test:live` with a real key, fix what breaks, and time each Turn by hand | A real conversation works, and the fallback beta and streaming behave | Next |
 | M4 | **Traces.** `ModelResponse` usage and timings, `TraceSink`, JSONL sink, redaction | Every Turn writes a valid Trace and latency per hop is visible | Planned |
 | M5 | **Tool registry, Guards, SQLite, verify Node** | S2–S7 and S10 pass offline, invariants I1, I8 and I9 hold | Planned |
@@ -525,6 +548,7 @@ Never commit keys. The Flow file never contains secrets.
 | Speech-to-text mangles IDs and dates | Normalisation layer, a confirm-back step for the ID, then a DOB re-ask. |
 | 2+ sequential model calls per Edge cause dead air | Trace per-hop latency, add deterministic `expression` Edges, stream the first Node's text while the next runs, spoken acknowledgement. |
 | The live Anthropic path has never run | M3 comes before anything else is built on it. |
+| The ElevenLabs path has never run, and no spoken Call has been held | Run the live Voice check and hold a spoken Call by hand before relying on the Voice. The text is always printed, so a Voice failure costs one line and does not stop a Call. |
 | Evaluation is flaky or expensive | N runs per Scenario with pass rates, cheap simulated Caller, spend cap, opt-in only. |
 | LLM judge is biased or drifts | Code assertions decide pass/fail, the judge only scores, rubrics are versioned, humans sample judged runs. |
 | Simulated Caller is unrealistically cooperative | Personas with awkward behaviour, scripted hints, and promoting real failed Calls into Scenarios. |
@@ -539,7 +563,7 @@ Never commit keys. The Flow file never contains secrets.
 1. **Who owns the harness?** Current decision: our own harness on `@anthropic-ai/sdk`, for per-Turn latency and control (§4.2). The Claude Agent SDK is Anthropic's packaged harness and could run a specific Node later behind an interface. Confirm this stays the decision.
 2. **Verification factors:** Are customer ID + DOB acceptable, or should the first release use name + DOB, phone number lookup, or a PIN?
 3. **Failure handling:** After lockout, should `failed` hang up, transfer to a human, or hand off to a callback Node?
-4. **First voice adapter:** Option A (TeXML webhooks, recommended), B (media streaming) or C (local microphone)? Not yet chosen.
+4. **First voice adapter:** Option A (TeXML webhooks, recommended), B (media streaming) or C (local microphone)? Not yet chosen. Option C now exists as a development tool (§8.6), which does not answer this: no phone adapter is chosen.
 5. **HTTP framework:** Hono or Fastify?
 6. **Caller identity by ANI:** should a matching caller number ever lower the bar, or stay signal-only?
 7. **Evaluation models and budget:** are `claude-haiku-5-5` for the simulated Caller and `claude-opus-5-5` for the judge acceptable, and what spend cap per run?
