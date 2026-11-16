@@ -30,15 +30,30 @@ export async function runTalk(engine: FlowEngine, voice: Voice, io: ChatIO, opti
   try {
     const greeting = await engine.start(callId, {}, reply);
     reply.end();
-    await speak(greeting.reply);
+    await voice.speak(greeting.reply);
   } catch (error) {
     io.write(`Could not open the Call: ${messageOf(error)}\n`);
     return "failed";
   }
-  return "input-closed";
 
-  async function speak(text: string): Promise<void> {
-    await voice.speak(text);
+  for (let turn = 1; ; turn++) {
+    const typed = (await io.ask("You (Enter to speak, or type): "))?.trim();
+    if (typed === undefined) return "input-closed";
+    let line = typed;
+    if (typed === "") {
+      line = (await voice.listen()).trim();
+      io.write(`You: ${line}\n`);
+    }
+    try {
+      const result = await engine.handleUser(callId, line, `turn-${turn}`, reply);
+      reply.end();
+      await voice.speak(result.reply);
+      if (result.ended) return "ended";
+    } catch (error) {
+      reply.end();
+      io.write(`(The Receptionist could not answer: ${messageOf(error)}. Please try again.)\n`);
+      turn--;
+    }
   }
 }
 
