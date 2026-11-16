@@ -48,4 +48,12 @@ describe("the live Voice check", () => {
     expect(exitCode).toBe(0);
     expect(new Set(checks.map((check) => check.status))).toEqual(new Set(["skipped"]));
   });
+
+  it("is run by `npm run test:live`, and every check stops on the missing-key message before anything is sent", { timeout: 60_000 }, () => {
+    const { exitCode, checks } = voiceChecks("test:live");
+
+    expect(exitCode).toBe(1);
+    expect(new Set(checks.map((check) => check.status))).toEqual(new Set(["failed"]));
+    for (const check of checks) expect(check.failureMessages.join("\n")).toContain("ELEVENLABS_API_KEY is not set");
+  });
 });
