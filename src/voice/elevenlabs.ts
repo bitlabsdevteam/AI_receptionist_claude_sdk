@@ -5,7 +5,7 @@ import { VoiceError, type Voice } from "./voice.js";
 import { clipMs, isWav } from "./wav.js";
 
 /** Low-latency text-to-speech model with a documented 40,000 character limit. Override with `ELEVENLABS_MODEL_ID`. */
-export const DEFAULT_MODEL_ID = "eleven_flash_v2_5";
+export const DEFAULT_TTS_MODEL_ID = "eleven_flash_v2_5";
 
 /** Speech-to-text model, the one the API reference uses. The endpoint requires one. Override with `ELEVENLABS_STT_MODEL_ID`. */
 export const DEFAULT_STT_MODEL_ID = "scribe_v2";
@@ -18,8 +18,8 @@ const OUTPUT_FORMAT = "mp3_44100_128";
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
- * What an `ElevenLabsVoice` is made with. `modelId` (text-to-speech) defaults to `DEFAULT_MODEL_ID`, `sttModelId`
- * (speech-to-text) to `DEFAULT_STT_MODEL_ID`, and `baseUrl` to the global API host.
+ * What an `ElevenLabsVoice` is made with. `ttsModelId` (text-to-speech) defaults to `DEFAULT_TTS_MODEL_ID`,
+ * `sttModelId` (speech-to-text) to `DEFAULT_STT_MODEL_ID`, and `baseUrl` to the global API host.
  */
 export interface ElevenLabsConfig extends ElevenLabsEnv {
   /** Give up on the request after this long. */
@@ -29,12 +29,10 @@ export interface ElevenLabsConfig extends ElevenLabsEnv {
   /** Plays the mp3. Defaults to macOS `afplay`. */
   player?: Player;
   /** Where the temp mp3 is written. Defaults to `os.tmpdir()`. */
-  tmpDir?: string;
+  tempDir?: string;
   /** Records the Caller for `listen()`, for example `() => recordClip({ waitForEnter })`. */
   recorder?: Recorder;
 }
-
-type Injected = Pick<ElevenLabsConfig, "baseUrl" | "timeoutMs" | "fetch" | "player" | "tmpDir" | "recorder">;
 
 /**
  * The Voice backed by ElevenLabs. `speak` sends the text to the text-to-speech endpoint, plays the mp3 and deletes it.
@@ -51,18 +49,18 @@ export class ElevenLabsVoice implements Voice {
 
   /**
    * A Voice set up from the environment, as `readElevenLabsEnv` reads it. Throws a `VoiceError` naming every required
-   * variable that is missing. The recorder is not in the environment: pass it in `injected`, which wins over the
-   * environment.
+   * variable that is missing. Whatever is in `overrides` wins over the environment. The recorder, the player and the
+   * HTTP client are not in the environment at all, so that is where they are passed.
    */
-  static fromEnv(env: NodeJS.ProcessEnv = process.env, injected: Injected = {}): ElevenLabsVoice {
-    return new ElevenLabsVoice({ ...readElevenLabsEnv(env), ...injected });
+  static fromEnv(env: NodeJS.ProcessEnv = process.env, overrides: Partial<ElevenLabsConfig> = {}): ElevenLabsVoice {
+    return new ElevenLabsVoice({ ...readElevenLabsEnv(env), ...overrides });
   }
 
   async speak(text: string): Promise<void> {
     if (!text.trim()) return;
     const audio = await this.#synthesize(text);
     try {
-      await playBytes(audio, this.#config.player ?? afplayPlayer, this.#config.tmpDir);
+      await playBytes(audio, this.#config.player ?? afplayPlayer, this.#config.tempDir);
     } catch (e) {
       throw new VoiceError(`Could not play the speech: ${this.#describe(e)}`, { cause: this.#safeCause(e) });
     }
@@ -108,11 +106,11 @@ export class ElevenLabsVoice implements Voice {
   }
 
   async #synthesize(text: string): Promise<Uint8Array> {
-    const { voiceId, modelId } = this.#config;
+    const { voiceId, ttsModelId } = this.#config;
     const bytes = await this.#post(
       `/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=${OUTPUT_FORMAT}`,
       { "content-type": "application/json", accept: "audio/mpeg" },
-      JSON.stringify({ text, model_id: modelId || DEFAULT_MODEL_ID }),
+      JSON.stringify({ text, model_id: ttsModelId || DEFAULT_TTS_MODEL_ID }),
     );
     if (bytes.length === 0) throw new VoiceError("ElevenLabs service error: the response had no audio.");
     return bytes;

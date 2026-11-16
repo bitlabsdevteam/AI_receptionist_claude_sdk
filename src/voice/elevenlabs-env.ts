@@ -4,8 +4,11 @@ import { VoiceError } from "./voice.js";
 export interface ElevenLabsEnv {
   apiKey: string;
   voiceId: string;
-  modelId?: string;
+  /** Text-to-speech model, from `ELEVENLABS_MODEL_ID`. */
+  ttsModelId?: string;
+  /** Speech-to-text model, from `ELEVENLABS_STT_MODEL_ID`. */
   sttModelId?: string;
+  /** API host, from `ELEVENLABS_BASE_URL`, for the regional hosts. */
   baseUrl?: string;
 }
 
@@ -40,10 +43,10 @@ export function readElevenLabsEnv(env: NodeJS.ProcessEnv): ElevenLabsEnv {
   if (!apiKey || !voiceId) throw new VoiceError(missingElevenLabsVariables(env).join("\n"));
 
   const config: ElevenLabsEnv = { apiKey, voiceId };
-  const modelId = read("ELEVENLABS_MODEL_ID");
+  const ttsModelId = read("ELEVENLABS_MODEL_ID");
   const sttModelId = read("ELEVENLABS_STT_MODEL_ID");
   const baseUrl = read("ELEVENLABS_BASE_URL");
-  if (modelId) config.modelId = modelId;
+  if (ttsModelId) config.ttsModelId = ttsModelId;
   if (sttModelId) config.sttModelId = sttModelId;
   if (baseUrl) config.baseUrl = baseUrl;
   return config;

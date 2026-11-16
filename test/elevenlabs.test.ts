@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { requireTalkConfig } from "../src/config.js";
-import { DEFAULT_MODEL_ID, DEFAULT_STT_MODEL_ID, ElevenLabsVoice } from "../src/voice/elevenlabs.js";
+import { DEFAULT_TTS_MODEL_ID, DEFAULT_STT_MODEL_ID, ElevenLabsVoice } from "../src/voice/elevenlabs.js";
 import type { Player } from "../src/voice/player.js";
 import { recordClip } from "../src/voice/recorder.js";
 import { VoiceError, VoiceInterrupted } from "../src/voice/voice.js";
@@ -81,7 +81,7 @@ afterEach(() => {
 });
 
 function voice(fetch: typeof globalThis.fetch, player: Player, extra: Partial<ConstructorParameters<typeof ElevenLabsVoice>[0]> = {}) {
-  return new ElevenLabsVoice({ apiKey: KEY, voiceId: "voice/1", fetch, player, tmpDir: dir, ...extra });
+  return new ElevenLabsVoice({ apiKey: KEY, voiceId: "voice/1", fetch, player, tempDir: dir, ...extra });
 }
 
 async function failureOf(promise: Promise<unknown>): Promise<VoiceError> {
@@ -107,15 +107,15 @@ describe("ElevenLabsVoice.speak", () => {
     const headers = new Headers(init.headers);
     expect(headers.get("xi-api-key")).toBe(KEY);
     expect(headers.get("content-type")).toBe("application/json");
-    expect(JSON.parse(String(init.body))).toEqual({ text: "Hello, this is Sam.", model_id: DEFAULT_MODEL_ID });
+    expect(JSON.parse(String(init.body))).toEqual({ text: "Hello, this is Sam.", model_id: DEFAULT_TTS_MODEL_ID });
     expect(url).not.toContain(KEY);
     expect(String(init.body)).not.toContain(KEY);
   });
 
   it("defaults to a low-latency model and lets the model be overridden", async () => {
-    expect(DEFAULT_MODEL_ID).toBe("eleven_flash_v2_5");
+    expect(DEFAULT_TTS_MODEL_ID).toBe("eleven_flash_v2_5");
     const { fetch, calls } = cannedFetch(audio());
-    await voice(fetch, recordingPlayer().player, { modelId: "eleven_v4_turbo" }).speak("Hi");
+    await voice(fetch, recordingPlayer().player, { ttsModelId: "eleven_v4_turbo" }).speak("Hi");
     expect(JSON.parse(String(calls[0]!.init.body)).model_id).toBe("eleven_v4_turbo");
   });
 
@@ -506,7 +506,7 @@ describe("ElevenLabsVoice.fromEnv", () => {
     const { fetch, calls } = cannedFetch(audio());
     const v = ElevenLabsVoice.fromEnv(
       { ELEVENLABS_API_KEY: KEY, ELEVENLABS_VOICE_ID: "abc", ELEVENLABS_MODEL_ID: "eleven_flash_v2" },
-      { fetch, player: recordingPlayer().player, tmpDir: dir },
+      { fetch, player: recordingPlayer().player, tempDir: dir },
     );
     await v.speak("Hi");
     expect(calls[0]!.url).toContain("/v1/text-to-speech/abc");
@@ -518,19 +518,19 @@ describe("ElevenLabsVoice.fromEnv", () => {
     const { fetch, calls } = cannedFetch(audio());
     const v = ElevenLabsVoice.fromEnv(
       { ELEVENLABS_API_KEY: KEY, ELEVENLABS_VOICE_ID: "abc", ELEVENLABS_MODEL_ID: " " },
-      { fetch, player: recordingPlayer().player, tmpDir: dir },
+      { fetch, player: recordingPlayer().player, tempDir: dir },
     );
     await v.speak("Hi");
-    expect(JSON.parse(String(calls[0]!.init.body)).model_id).toBe(DEFAULT_MODEL_ID);
+    expect(JSON.parse(String(calls[0]!.init.body)).model_id).toBe(DEFAULT_TTS_MODEL_ID);
   });
 
-  it("reads the speech-to-text model from ELEVENLABS_STT_MODEL_ID, and takes an injected recorder", async () => {
+  it("reads the speech-to-text model from ELEVENLABS_STT_MODEL_ID, and takes a recorder", async () => {
     const { fetch, calls } = cannedFetch(transcript({ text: "hello" }), transcript({ text: "hello" }));
     const env = { ELEVENLABS_API_KEY: KEY, ELEVENLABS_VOICE_ID: "abc" };
-    const injected = { fetch, recorder: async () => ONE_SECOND };
+    const overrides = { fetch, recorder: async () => ONE_SECOND };
 
-    expect(await ElevenLabsVoice.fromEnv({ ...env, ELEVENLABS_STT_MODEL_ID: "scribe_v3" }, injected).listen()).toBe("hello");
-    await ElevenLabsVoice.fromEnv({ ...env, ELEVENLABS_STT_MODEL_ID: " " }, injected).listen();
+    expect(await ElevenLabsVoice.fromEnv({ ...env, ELEVENLABS_STT_MODEL_ID: "scribe_v3" }, overrides).listen()).toBe("hello");
+    await ElevenLabsVoice.fromEnv({ ...env, ELEVENLABS_STT_MODEL_ID: " " }, overrides).listen();
 
     expect(new Headers(calls[0]!.init.headers).get("xi-api-key")).toBe(KEY);
     expect((calls[0]!.init.body as FormData).get("model_id")).toBe("scribe_v3");
@@ -540,11 +540,11 @@ describe("ElevenLabsVoice.fromEnv", () => {
   it("reads the API host from ELEVENLABS_BASE_URL, and uses the default host when it is unset or blank", async () => {
     const { fetch, calls } = cannedFetch(audio(), audio(), audio());
     const env = { ELEVENLABS_API_KEY: KEY, ELEVENLABS_VOICE_ID: "abc" };
-    const injected = { fetch, player: recordingPlayer().player, tmpDir: dir };
+    const overrides = { fetch, player: recordingPlayer().player, tempDir: dir };
 
-    await ElevenLabsVoice.fromEnv({ ...env, ELEVENLABS_BASE_URL: " https://api.eu.residency.elevenlabs.io " }, injected).speak("Hi");
-    await ElevenLabsVoice.fromEnv({ ...env, ELEVENLABS_BASE_URL: " " }, injected).speak("Hi");
-    await ElevenLabsVoice.fromEnv(env, injected).speak("Hi");
+    await ElevenLabsVoice.fromEnv({ ...env, ELEVENLABS_BASE_URL: " https://api.eu.residency.elevenlabs.io " }, overrides).speak("Hi");
+    await ElevenLabsVoice.fromEnv({ ...env, ELEVENLABS_BASE_URL: " " }, overrides).speak("Hi");
+    await ElevenLabsVoice.fromEnv(env, overrides).speak("Hi");
 
     expect(calls.map((call) => new URL(call.url).origin)).toEqual([
       "https://api.eu.residency.elevenlabs.io",
