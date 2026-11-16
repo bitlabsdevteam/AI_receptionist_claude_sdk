@@ -1,27 +1,12 @@
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
-import { ConfigError, loadDotEnv, requireApiKey } from "../config.js";
-import { AnthropicModelClient } from "../engine/anthropic-client.js";
-import { FlowEngine } from "../engine/engine.js";
-import { loadFlow } from "../flow/load.js";
+import { loadDotEnv, requireApiKey } from "../config.js";
 import { runChat, type ChatIO } from "./chat.js";
+import { loadFlowAndEngine, runProgram } from "./program.js";
 
-/** Used when FLOW_PATH is not set. Relative to the project, not to where the program was started from. */
-const DEFAULT_FLOW_PATH = fileURLToPath(new URL("../../flows/receptionist.json", import.meta.url));
-
-async function main(): Promise<number> {
-  try {
-    loadDotEnv();
-    requireApiKey(process.env);
-  } catch (error) {
-    if (!(error instanceof ConfigError)) throw error;
-    process.stderr.write(`${error.message}\n`);
-    return 1;
-  }
-
-  const flow = await loadFlow(process.env.FLOW_PATH ? resolve(process.env.FLOW_PATH) : DEFAULT_FLOW_PATH);
-  const engine = new FlowEngine(flow, { client: new AnthropicModelClient() });
+runProgram(async () => {
+  loadDotEnv();
+  requireApiKey(process.env);
+  const { flow, engine } = await loadFlowAndEngine();
 
   const { stdin, stdout } = process;
   const rl = createInterface({ input: stdin, output: stdout });
@@ -58,12 +43,4 @@ async function main(): Promise<number> {
   if (chatResult === "input-closed") stdout.write("\n");
   rl.close();
   return chatResult === "failed" ? 1 : 0;
-}
-
-main().then(
-  (code) => process.exit(code),
-  (error: unknown) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exit(1);
-  },
-);
+});

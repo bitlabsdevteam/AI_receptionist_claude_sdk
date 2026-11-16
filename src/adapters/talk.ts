@@ -1,6 +1,6 @@
 import type { FlowEngine } from "../engine/engine.js";
 import { VoiceInterrupted, type Voice } from "../voice/voice.js";
-import type { ChatIO } from "./chat.js";
+import { messageOf, type ChatIO } from "./chat.js";
 import { TerminalReply } from "./terminal-reply.js";
 
 export interface TalkOptions {
@@ -115,8 +115,4 @@ function timingLine(timings: Timing[]): string {
 /** The error's message without a closing full stop, to go in the middle of a sentence. */
 function reasonOf(error: unknown): string {
   return messageOf(error).replace(/\.$/, "");
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

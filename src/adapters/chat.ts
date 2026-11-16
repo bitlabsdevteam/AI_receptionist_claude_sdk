@@ -57,6 +57,7 @@ export async function runChat(engine: FlowEngine, io: ChatIO, options: ChatOptio
   }
 }
 
-function messageOf(error: unknown): string {
+/** The error's message, or the thrown value as text when it is not an `Error`. */
+export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
