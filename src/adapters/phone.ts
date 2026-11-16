@@ -2,9 +2,12 @@ import type { FlowEngine } from "../engine/engine.js";
 import type { TurnResult } from "../engine/turn.js";
 import { messageOf } from "./chat.js";
 
-/** What the rules of a phone Call may ask of the phone line. */
+/** What the rules of a phone Call may ask of the phone line. Whatever carries the Call implements it. */
 export interface PhoneLine {
-  /** Says `text` to the Caller on this Call. */
+  /**
+   * Says `text` to the Caller on this Call. It hands the words over and returns at once, without waiting for them to
+   * be spoken. Words cannot be taken back once handed over, so only a finished reply is ever passed.
+   */
   say(callId: string, text: string): void;
 }
 
@@ -29,19 +32,22 @@ interface PhoneCall {
 }
 
 /**
- * The rules of a Call on the phone Channel. The phone line reports what happens on it by calling the methods below,
- * and is asked to do things through `PhoneLine`.
+ * The rules of a Call on the phone Channel, for every Call on the line at once. It knows the line only as things that
+ * happen on it, which are reported by calling the five methods below (a call arrived, the line connected, the Caller
+ * said something, interrupted or hung up), and as `PhoneLine`, through which it asks for words to be said.
+ *
+ * Each method returns at once and never throws. The work it starts goes on behind it, one piece at a time for each
+ * Call, and Calls do not wait for each other. A report about a Call that never arrived, or that is over, is ignored.
  */
 export class PhoneCalls {
   readonly #engine: FlowEngine;
   readonly #line: PhoneLine;
   readonly #write: (text: string) => void;
+  readonly #now: () => number;
   /** The Calls whose Callers are on the line, by id. */
   readonly #calls = new Map<string, PhoneCall>();
   /** The ids of the Calls that are over. Whatever the line still reports for one of them is ignored. */
   readonly #over = new Set<string>();
-
-  readonly #now: () => number;
 
   /** `write` prints a line for whoever is at the terminal. It is plain output, not a Trace. */
   constructor(engine: FlowEngine, line: PhoneLine, write: (text: string) => void, options: PhoneOptions = {}) {
@@ -52,8 +58,9 @@ export class PhoneCalls {
   }
 
   /**
-   * A call arrived on the line. `callId` is the line's id for it, which becomes the Call's id. The greeting is made
-   * from this moment, so that it is ready, or nearly, by the time the line connects.
+   * A call arrived on the line. `callId` is the line's id for it, which becomes the Call's id, and `callerNumber` is
+   * left out when the Caller withheld it. The greeting is made from this moment, so that it is ready, or nearly, by
+   * the time the line connects. An arrival reported again opens nothing more.
    */
   callArrived(callId: string, callerNumber?: string): void {
     if (this.#calls.has(callId) || this.#over.has(callId)) return;
