@@ -80,7 +80,7 @@ export class PhoneCalls {
       this.#forget(call);
       return;
     }
-    this.#line.say(call.id, greeting.reply);
+    this.#say(call, greeting.reply);
   }
 
   /** Runs one Turn and says its reply. A Turn that fails was not recorded by the engine, so it spends no turn id. */
@@ -95,7 +95,19 @@ export class PhoneCalls {
       return;
     }
     call.turns = turn;
-    this.#line.say(call.id, result.reply);
+    this.#say(call, result.reply);
+  }
+
+  /**
+   * Hands the Receptionist's words to the line: the greeting, or a finished Turn's reply. A line that cannot take them
+   * costs one printed line and nothing else. The Turn stands and the Call carries on.
+   */
+  #say(call: PhoneCall, text: string): void {
+    try {
+      this.#line.say(call.id, text);
+    } catch (error) {
+      this.#write(`(Could not say the reply: ${messageOf(error)})\n`);
+    }
   }
 
   #isOver(call: PhoneCall): boolean {

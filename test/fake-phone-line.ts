@@ -7,14 +7,17 @@ export interface Said {
 }
 
 /**
- * Stand-in for the phone line. It records everything it was asked to say, in order, and says nothing. What happens on
- * the line (a call arriving, the Caller speaking or hanging up) is scripted by the test, which reports each event to
- * `PhoneCalls` itself and then waits with `settled()`.
+ * Stand-in for the phone line. It records everything it was asked to say, in order, and says nothing. Each error put
+ * in `failures` makes one `say()` throw instead. What happens on the line (a call arriving, the Caller speaking or
+ * hanging up) is scripted by the test, which reports each event to `PhoneCalls` itself and then waits with `settled()`.
  */
 export class FakePhoneLine implements PhoneLine {
   readonly said: Said[] = [];
+  readonly failures: Error[] = [];
 
   say(callId: string, text: string): void {
+    const failure = this.failures.shift();
+    if (failure) throw failure;
     this.said.push({ callId, text });
   }
 

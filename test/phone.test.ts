@@ -44,6 +44,7 @@ function holdModel(client: FakeClaude) {
   return {
     asked: () => asked,
     async answer(): Promise<void> {
+      await settled();
       const next = waiting.shift();
       if (!next) throw new Error("The model has no request waiting for an answer");
       next();
@@ -270,5 +271,47 @@ describe("what the line is asked to say", () => {
     expect(line.said).toEqual([]);
     expect(client.requests).toHaveLength(1);
     expect(output()).toContain("Could not open the Call: overloaded\n");
+  });
+
+  it("costs one printed line when the line cannot say it, and the Call carries on", async () => {
+    const { phone, line, output, session } = await greetedCall([say("We are Acme Co."), say("Happy to help.")]);
+    line.failures.push(new Error("the line is busy"));
+
+    phone.callerSaid(CALL, "Who are you?");
+    phone.callerSaid(CALL, "Thanks.");
+    await settled();
+
+    expect(output().match(/Could not say/g)).toHaveLength(1);
+    expect(output()).toContain("(Could not say the reply: the line is busy)\n");
+    expect(line.saidOn(CALL)).toEqual([GREETING, "Happy to help."]);
+    expect(Object.keys((await session())?.turns ?? {})).toEqual(["call-1:1", "call-1:2"]);
+  });
+});
+
+describe("two things said in quick succession", () => {
+  it("are two Turns, one at a time, and two replies in order", async () => {
+    const { phone, client, line, session } = phoneWith([say(GREETING), say("We are Acme Co."), say("Nine to five.")]);
+    const model = holdModel(client);
+    phone.callArrived(CALL, NUMBER);
+    phone.lineConnected(CALL);
+    await model.answer();
+
+    phone.callerSaid(CALL, "Who are you?");
+    phone.callerSaid(CALL, "And your hours?");
+    await settled();
+    // The second Turn has not started: the model has been asked for the greeting and the first Turn only.
+    expect(model.asked()).toBe(2);
+
+    await model.answer();
+    expect(line.saidOn(CALL)).toEqual([GREETING, "We are Acme Co."]);
+    await model.answer();
+
+    expect(line.saidOn(CALL)).toEqual([GREETING, "We are Acme Co.", "Nine to five."]);
+    expect(Object.keys((await session())?.turns ?? {})).toEqual(["call-1:1", "call-1:2"]);
+    expect(client.requests[2]?.messages.slice(-3)).toEqual([
+      { role: "user", content: "Who are you?" },
+      { role: "assistant", content: "We are Acme Co." },
+      { role: "user", content: "And your hours?" },
+    ]);
   });
 });
