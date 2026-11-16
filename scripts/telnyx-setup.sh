@@ -281,11 +281,14 @@ store() {
 # other programs.
 mktemp() { command mktemp "$WORK_DIR/env.XXXXXX"; }
 
-# require_ignored_env_file stops the wizard when git would commit ENV_FILE.
+# require_ignored_env_file stops the wizard when git would commit ENV_FILE:
+# a file inside a repository that git does not ignore (check-ignore says 1).
 require_ignored_env_file() {
+  local ignored=0
   command -v git >/dev/null 2>&1 || return 0
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 </dev/null || return 0
-  git check-ignore -q "$ENV_FILE" </dev/null && return 0
+  git check-ignore -q "$ENV_FILE" >/dev/null 2>&1 </dev/null || ignored=$?
+  if [[ "$ignored" -ne 1 ]]; then return 0; fi
   printf '%s is in a git repository and is not git-ignored, so the keys could be committed.\n' "$ENV_FILE" >&2
   printf 'Add it to .gitignore, then run this again.\n' >&2
   exit 1
@@ -326,7 +329,8 @@ json() {
 # failed. After a failure it waits, so the reason can be read before the next
 # step clears the screen.
 outcome() {
-  local line="$_STAGE_INDEX. ${STEP_NAMES[$((_STAGE_INDEX - 1))]}: $1. $2"
+  local line
+  line=$(printf '%-8s %s. %s: %s' "$1" "$_STAGE_INDEX" "${STEP_NAMES[$((_STAGE_INDEX - 1))]}" "$2")
   STEP_LINES+=("$line")
   if [[ "$1" == failed ]]; then
     FAILED=$((FAILED + 1))
@@ -655,6 +659,8 @@ step_application() {
     outcome skipped "an application already sends API v2 webhooks to $webhook"
     return 0
   fi
+  # Without the list there is nothing to tell the person to put right in the portal.
+  if [[ "$HTTP_STATUS" != 200 ]]; then outcome failed "$APP_STATE"; return 0; fi
 
   open_url "https://portal.telnyx.com"
   step "In the sidebar go to Real-Time Communication > Voice > Programmable Voice."

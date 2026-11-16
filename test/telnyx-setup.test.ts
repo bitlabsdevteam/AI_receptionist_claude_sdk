@@ -81,6 +81,8 @@ interface Account {
   numbers: Json[][];
   /** The account's available credit, `5.00` unless given. */
   credit?: string;
+  /** True for an account whose level may not have applications: Telnyx refuses to list them. */
+  applicationsRefused?: boolean;
 }
 
 /** An account that gains its application and its number while the wizard waits, as the person works in the portal. */
@@ -116,7 +118,7 @@ interface Run {
 /** How each step ended, read from the wizard's closing report: `done`, `skipped` or `failed`, in step order. */
 function reported(run: Run): string[] {
   const report = run.output.slice(run.output.lastIndexOf("Telnyx setup"));
-  return STEPS.map((name, index) => new RegExp(`${index + 1}\\. ${name}: (\\w+)\\.`).exec(report)?.[1] ?? "not reported");
+  return STEPS.map((name, index) => new RegExp(`(\\w+) +${index + 1}\\. ${name}:`).exec(report)?.[1] ?? "not reported");
 }
 
 /** Every file under `root`, however deep. */
@@ -232,6 +234,8 @@ async function setUp(account: Account, ngrok: false | { authToken?: boolean; url
       send(405, { errors: [{ title: "The stand-in only answers reads" }] });
     } else if (path === "/v2/balance") {
       send(200, { data: { record_type: "balance", balance: "5.00", available_credit: account.credit ?? "5.00", currency: "USD" } });
+    } else if (path.startsWith("/v2/call_control_applications") && account.applicationsRefused) {
+      send(403, { errors: [{ code: "10010", title: "Authorization failed" }] });
     } else if (path.startsWith("/v2/call_control_applications")) {
       send(200, { data: next(applications) });
     } else if (path.startsWith("/v2/phone_numbers")) {
@@ -432,7 +436,7 @@ describe.concurrent("a value already in .env", () => {
 
     expect(run.output).toContain("Replace the TELNYX_API_KEY stored in .env?");
     expect(run.output).toContain(
-      "2. API key and public key: failed. Telnyx does not accept the stored TELNYX_API_KEY (HTTP 401), and it was kept",
+      "failed   2. API key and public key: Telnyx does not accept the stored TELNYX_API_KEY (HTTP 401), and it was kept",
     );
     expect(run.code).toBe(1);
     expect(readFileSync(wizard.envFile, "utf8")).toBe(before);
@@ -474,7 +478,7 @@ describe.concurrent("a value already in .env", () => {
     const run = await wizard.run(["", PUBLIC_BASE_URL, "n"]);
 
     expect(run.output).toContain("Replace the PUBLIC_BASE_URL stored in .env?");
-    expect(run.output).toContain("3. ngrok: failed. the PUBLIC_BASE_URL stored before was kept");
+    expect(run.output).toContain("failed   3. ngrok: the PUBLIC_BASE_URL stored before was kept");
     expect(readFileSync(wizard.envFile, "utf8")).toBe(before);
   });
 });
@@ -485,7 +489,7 @@ describe.concurrent("what the wizard checks without spending money", () => {
 
     const run = await wizard.run(["", "trial", REJECTED_KEY, REJECTED_KEY, REJECTED_KEY]);
 
-    expect(run.output).toContain("2. API key and public key: failed. Telnyx did not accept the API key in three tries");
+    expect(run.output).toContain("failed   2. API key and public key: Telnyx did not accept the API key in three tries");
     expect(run.code).toBe(1);
     expect(wizard.stored().TELNYX_API_KEY).toBeUndefined();
     expect(shownSecrets(run.output)).toEqual([]);
@@ -499,7 +503,7 @@ describe.concurrent("what the wizard checks without spending money", () => {
     const run = await wizard.run(["", "trial", API_KEY]);
 
     expect(run.output).toContain(
-      `2. API key and public key: failed. the API key is stored but could not be checked: Telnyx could not be reached at ${wizard.telnyxUrl}`,
+      `failed   2. API key and public key: the API key is stored but could not be checked: Telnyx could not be reached at ${wizard.telnyxUrl}`,
     );
     expect(run.code).toBe(1);
     expect(wizard.stored().TELNYX_API_KEY).toBe(API_KEY);
@@ -519,7 +523,7 @@ describe.concurrent("what the wizard checks without spending money", () => {
 
     const run = await wizard.run(["", "trial", API_KEY, "not-a-public-key"]);
 
-    expect(run.output).toContain("2. API key and public key: failed. what was pasted is not the public key");
+    expect(run.output).toContain("failed   2. API key and public key: what was pasted is not the public key");
     expect(wizard.stored().TELNYX_PUBLIC_KEY).toBeUndefined();
     expect(run.output).not.toContain("not-a-public-key");
   });
@@ -531,9 +535,9 @@ describe.concurrent("what the wizard checks without spending money", () => {
     const run = await wizard.run(["", ""]);
 
     expect(run.output).toContain(
-      `4. Voice API application: failed. the application with the Webhook URL ${WEBHOOK_URL} is not ready: its Webhook API version is 1, not 2`,
+      `failed   4. Voice API application: the application with the Webhook URL ${WEBHOOK_URL} is not ready: its Webhook API version is 1, not 2`,
     );
-    expect(run.output).toContain("5. Number: failed. it needs the Voice API application (step 4)");
+    expect(run.output).toContain("failed   5. Number: it needs the Voice API application (step 4)");
     expect(run.code).toBe(1);
   });
 
@@ -545,8 +549,19 @@ describe.concurrent("what the wizard checks without spending money", () => {
     const run = await wizard.run(["", ""]);
 
     expect(run.output).toContain(
-      `4. Voice API application: failed. none of the account's 1 application(s) has the Webhook URL ${WEBHOOK_URL}`,
+      `failed   4. Voice API application: none of the account's 1 application(s) has the Webhook URL ${WEBHOOK_URL}`,
     );
+  });
+
+  it("does not send the person to the portal when Telnyx will not list the applications", async () => {
+    const wizard = await setUp({ ...readyAccount, applicationsRefused: true });
+    wizard.writeFinishedEnv();
+
+    const run = await wizard.run([]);
+
+    expect(run.output).toContain("failed   4. Voice API application: the applications could not be listed: Telnyx answered HTTP 403");
+    expect(wizard.opened()).toEqual([]);
+    expect(run.code).toBe(1);
   });
 
   it("says when the account's number is not assigned to the application", async () => {
@@ -555,7 +570,7 @@ describe.concurrent("what the wizard checks without spending money", () => {
 
     const run = await wizard.run(["", ""]);
 
-    expect(run.output).toContain("5. Number: failed. the account has 1 number(s), but none is assigned to the application");
+    expect(run.output).toContain("failed   5. Number: the account has 1 number(s), but none is assigned to the application");
     expect(reported(run)).toEqual(["skipped", "skipped", "skipped", "skipped", "failed", "skipped"]);
     expect(run.code).toBe(1);
   });
@@ -567,7 +582,7 @@ describe.concurrent("what the wizard checks without spending money", () => {
     const run = await wizard.run(["", ""]);
 
     expect(run.output).toContain(
-      "5. Number: failed. the number ending 0198 is assigned to the application, but its status is purchase-pending, not active",
+      "failed   5. Number: the number ending 0198 is assigned to the application, but its status is purchase-pending, not active",
     );
     expect(shownSecrets(run.output)).toEqual([]);
   });
@@ -579,7 +594,7 @@ describe.concurrent("what the wizard checks without spending money", () => {
 
     const run = await wizard.run(["", "(415) 555-0142"]);
 
-    expect(run.output).toContain("6. Allowed Callers: failed. that is not a phone number in E.164 form");
+    expect(run.output).toContain("failed   6. Allowed Callers: that is not a phone number in E.164 form");
     expect(run.output).not.toContain("555-0142");
     expect(wizard.stored().PHONE_ALLOWED_CALLERS).toBeUndefined();
   });
@@ -592,7 +607,7 @@ describe.concurrent("the ngrok step", () => {
 
     const run = await wizard.run([]);
 
-    expect(run.output).toContain("3. ngrok: failed. ngrok is not installed");
+    expect(run.output).toContain("failed   3. ngrok: ngrok is not installed");
     expect(reported(run)).toEqual(["skipped", "skipped", "failed", "skipped", "skipped", "skipped"]);
     expect(run.code).toBe(1);
   });
@@ -604,7 +619,7 @@ describe.concurrent("the ngrok step", () => {
     const run = await wizard.run(["", ""]);
 
     expect(wizard.opened()).toEqual(["https://dashboard.ngrok.com/get-started/your-authtoken"]);
-    expect(run.output).toContain("3. ngrok: failed. ngrok has no auth token");
+    expect(run.output).toContain("failed   3. ngrok: ngrok has no auth token");
     expect(run.code).toBe(1);
   });
 });
