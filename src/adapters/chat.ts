@@ -1,4 +1,5 @@
 import type { FlowEngine } from "../engine/engine.js";
+import { messageOf } from "./message-of.js";
 import { TerminalReply } from "./terminal-reply.js";
 
 /** The Caller's side of a terminal: where the Receptionist's words go and where the Caller's come from. */
@@ -55,9 +56,4 @@ export async function runChat(engine: FlowEngine, io: ChatIO, options: ChatOptio
       turn--;
     }
   }
-}
-
-/** The error's message, or the thrown value as text when it is not an `Error`. */
-export function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

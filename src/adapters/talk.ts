@@ -1,6 +1,7 @@
 import type { FlowEngine } from "../engine/engine.js";
 import { VoiceInterrupted, type Voice } from "../voice/voice.js";
-import { messageOf, type ChatIO } from "./chat.js";
+import type { ChatIO } from "./chat.js";
+import { messageOf } from "./message-of.js";
 import { TerminalReply } from "./terminal-reply.js";
 
 export interface TalkOptions {

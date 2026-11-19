@@ -4,7 +4,7 @@ import { AnthropicModelClient } from "../engine/anthropic-client.js";
 import { FlowEngine } from "../engine/engine.js";
 import { loadFlow } from "../flow/load.js";
 import type { Flow } from "../flow/schema.js";
-import { messageOf } from "./chat.js";
+import { messageOf } from "./message-of.js";
 
 /** What `npm run chat` and `npm run talk` share: the Flow they load, the engine they run it on, and how they exit. */
 

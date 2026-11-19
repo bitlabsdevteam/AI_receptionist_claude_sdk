@@ -1,0 +1,52 @@
+import type { PhoneLine } from "../src/adapters/phone.js";
+
+/** Something the rules of a phone Call asked the line to say, and on which Call. */
+export interface Said {
+  callId: string;
+  text: string;
+}
+
+/**
+ * Stand-in for the phone line. It records everything it was asked to say, in order, and says nothing. Each error put
+ * in `failures` makes one `say()` throw instead. What happens on the line (a call arriving, the Caller speaking or
+ * hanging up) is scripted by the test, which reports each event to `PhoneCalls` itself and then waits with `settled()`.
+ */
+export class FakePhoneLine implements PhoneLine {
+  readonly said: Said[] = [];
+  readonly failures: Error[] = [];
+  /** What the line was asked to close a Call with, in order. */
+  readonly closed: Said[] = [];
+  /** The Calls the line was asked to hang up, in order. */
+  readonly hungUp: string[] = [];
+  /** Each error put here makes one `closeWith()` throw instead. */
+  readonly closeFailures: Error[] = [];
+
+  say(callId: string, text: string): void {
+    const failure = this.failures.shift();
+    if (failure) throw failure;
+    this.said.push({ callId, text });
+  }
+
+  closeWith(callId: string, text: string): void {
+    const failure = this.closeFailures.shift();
+    if (failure) throw failure;
+    this.closed.push({ callId, text });
+  }
+
+  hangUp(callId: string): void {
+    this.hungUp.push(callId);
+  }
+
+  /** What the Caller on one Call was told, in order. */
+  saidOn(callId: string): string[] {
+    return this.said.filter((said) => said.callId === callId).map((said) => said.text);
+  }
+}
+
+/**
+ * Waits until everything already under way has gone as far as it can. The engine, `FakeClaude` and the in-memory store
+ * use promises only, with no timers and no I/O, so one turn of the event loop is enough.
+ */
+export function settled(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
